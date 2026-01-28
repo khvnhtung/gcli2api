@@ -32,6 +32,15 @@ from src.api.utils import (
     collect_streaming_response,
 )
 
+# 导入重试策略模块
+from src.api.retry_strategy import (
+    determine_retry_strategy,
+    apply_retry_delay,
+    should_rotate_account,
+    is_retryable_error,
+    RetryStrategy,
+)
+
 # ==================== 全局凭证管理器 ====================
 
 # 使用全局单例 credential_manager，自动初始化
@@ -186,22 +195,29 @@ async def stream_request(
                     except Exception:
                         error_body = ""
 
-                    # 如果错误码是429或者在禁用码当中，做好记录后进行重试
-                    if status_code == 429 or status_code in DISABLE_ERROR_CODES:
-                        log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
+                    # 使用新的重试策略判断是否应该重试
+                    strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_body or "")
 
-                        # 并行预热下一个凭证,不阻塞当前处理
-                        if next_cred_task is None and attempt < max_retries:
-                            next_cred_task = asyncio.create_task(
-                                credential_manager.get_valid_credential(
-                                    mode="antigravity", model_key=model_name
+                    if strategy != RetryStrategy.NO_RETRY:
+                        # 可重试的错误 (429, 503, 529, 500, 401, 403)
+                        log.warning(
+                            f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), "
+                            f"策略={strategy.value}, 凭证: {current_file}, "
+                            f"响应: {error_body[:500] if error_body else '无'}"
+                        )
+
+                        # 并行预热下一个凭证 (仅在需要轮换账号时)
+                        if should_rotate_account(status_code):
+                            if next_cred_task is None and attempt < max_retries:
+                                next_cred_task = asyncio.create_task(
+                                    credential_manager.get_valid_credential(
+                                        mode="antigravity", model_key=model_name
+                                    )
                                 )
-                            )
 
                         # 记录错误
                         cooldown_until = None
                         if status_code == 429 and error_body:
-                            # 使用已缓存的error_body解析冷却时间
                             try:
                                 cooldown_until = await parse_and_log_cooldown(error_body, mode="antigravity")
                             except Exception:
@@ -212,24 +228,26 @@ async def stream_request(
                             cooldown_until, mode="antigravity", model_key=model_name
                         )
 
-                        # 检查是否应该重试
-                        should_retry = await handle_error_with_retry(
-                            credential_manager, status_code, current_file,
-                            retry_config["retry_enabled"], attempt, max_retries, retry_interval,
-                            mode="antigravity"
-                        )
-
-                        if should_retry and attempt < max_retries:
-                            need_retry = True
-                            break  # 跳出内层循环，准备重试
-                        else:
-                            # 不重试，直接返回原始错误
-                            log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数或不应重试，返回原始错误")
-                            yield chunk
-                            return
+                        # 应用重试延迟
+                        if attempt < max_retries:
+                            should_continue = await apply_retry_delay(
+                                strategy, base_ms, max_ms, attempt,
+                                trace_id=f"ANTIGRAVITY-STREAM-{current_file[:20]}"
+                            )
+                            if should_continue:
+                                need_retry = True
+                                break  # 跳出内层循环，准备重试
+                        
+                        # 达到最大重试次数
+                        log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        yield chunk
+                        return
                     else:
-                        # 错误码不在禁用码当中，直接返回，无需重试
-                        log.error(f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
+                        # 不可重试的错误 (400等)
+                        log.error(
+                            f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), "
+                            f"凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}"
+                        )
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
                             None, mode="antigravity", model_key=model_name
@@ -487,21 +505,29 @@ async def non_stream_request(
                 except Exception:
                     pass
 
-                if status_code == 429 or status_code in DISABLE_ERROR_CODES:
-                    log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
+                # 使用新的重试策略判断是否应该重试
+                strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_text or "")
 
-                    # 并行预热下一个凭证,不阻塞当前处理
-                    if next_cred_task is None and attempt < max_retries:
-                        next_cred_task = asyncio.create_task(
-                            credential_manager.get_valid_credential(
-                                mode="antigravity", model_key=model_name
+                if strategy != RetryStrategy.NO_RETRY:
+                    # 可重试的错误 (429, 503, 529, 500, 401, 403)
+                    log.warning(
+                        f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), "
+                        f"策略={strategy.value}, 凭证: {current_file}, "
+                        f"响应: {error_text[:500] if error_text else '无'}"
+                    )
+
+                    # 并行预热下一个凭证 (仅在需要轮换账号时)
+                    if should_rotate_account(status_code):
+                        if next_cred_task is None and attempt < max_retries:
+                            next_cred_task = asyncio.create_task(
+                                credential_manager.get_valid_credential(
+                                    mode="antigravity", model_key=model_name
+                                )
                             )
-                        )
 
                     # 记录错误
                     cooldown_until = None
                     if status_code == 429 and error_text:
-                        # 使用已缓存的error_text解析冷却时间
                         try:
                             cooldown_until = await parse_and_log_cooldown(error_text, mode="antigravity")
                         except Exception:
@@ -512,22 +538,24 @@ async def non_stream_request(
                         cooldown_until, mode="antigravity", model_key=model_name
                     )
 
-                    # 检查是否应该重试
-                    should_retry = await handle_error_with_retry(
-                        credential_manager, status_code, current_file,
-                        retry_config["retry_enabled"], attempt, max_retries, retry_interval,
-                        mode="antigravity"
-                    )
-
-                    if should_retry and attempt < max_retries:
-                        need_retry = True
+                    # 应用重试延迟
+                    if attempt < max_retries:
+                        should_continue = await apply_retry_delay(
+                            strategy, base_ms, max_ms, attempt,
+                            trace_id=f"ANTIGRAVITY-{current_file[:20]}"
+                        )
+                        if should_continue:
+                            need_retry = True
                     else:
-                        # 不重试，直接返回原始错误
-                        log.error(f"[ANTIGRAVITY] 达到最大重试次数或不应重试，返回原始错误")
+                        # 达到最大重试次数
+                        log.error(f"[ANTIGRAVITY] 达到最大重试次数 ({max_retries})，返回原始错误")
                         return last_error_response
                 else:
-                    # 错误码不在禁用码当中，直接返回，无需重试
-                    log.error(f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
+                    # 不可重试的错误 (400等)
+                    log.error(
+                        f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), "
+                        f"凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}"
+                    )
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
                         None, mode="antigravity", model_key=model_name
