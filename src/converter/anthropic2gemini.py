@@ -5,10 +5,11 @@ Anthropic 到 Gemini 格式转换器
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 from log import log
 from src.converter.utils import merge_system_messages
@@ -235,79 +236,469 @@ def _remove_nulls_for_tool_input(value: Any) -> Any:
     return value
 
 # ============================================================================
-# 2. JSON Schema 清理
+# 2. JSON Schema 清理 (Enhanced - ported from Antigravity-Manager)
 # ============================================================================
+#
+# This module handles JSON Schema cleaning for Gemini API compatibility.
+# Key features:
+# 1. $ref/$defs flattening - expand schema references
+# 2. anyOf/oneOf merging - select best branch from union types
+# 3. allOf merging - combine all schema fragments
+# 4. Empty object injection - add placeholder for empty object types
+# 5. Type normalization - handle ["string", "null"] -> "string"
+# 6. Constraint migration - move validation rules to description
+# ============================================================================
+
+
+def _collect_all_defs(schema: Any, defs: Dict[str, Any]) -> None:
+    """
+    Recursively collect all $defs and definitions from any nesting level.
+    MCP tools often define $defs at arbitrary depths, not just root level.
+
+    Args:
+        schema: The schema to scan
+        defs: Dictionary to collect definitions into (mutated)
+    """
+    if not isinstance(schema, dict):
+        return
+
+    # Collect $defs at current level
+    if "$defs" in schema and isinstance(schema["$defs"], dict):
+        for k, v in schema["$defs"].items():
+            if k not in defs:  # First definition wins
+                defs[k] = v
+
+    # Collect definitions (Draft-07 style)
+    if "definitions" in schema and isinstance(schema["definitions"], dict):
+        for k, v in schema["definitions"].items():
+            if k not in defs:
+                defs[k] = v
+
+    # Recurse into all values
+    for key, value in schema.items():
+        if key not in ("$defs", "definitions"):
+            if isinstance(value, dict):
+                _collect_all_defs(value, defs)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        _collect_all_defs(item, defs)
+
+
+def _flatten_refs(schema: Dict[str, Any], defs: Dict[str, Any]) -> None:
+    """
+    Recursively expand $ref references using collected definitions.
+    Unresolved refs are converted to string type with a hint.
+
+    Args:
+        schema: The schema to process (mutated)
+        defs: Dictionary of collected definitions
+    """
+    if not isinstance(schema, dict):
+        return
+
+    # Handle $ref at current level
+    if "$ref" in schema:
+        ref_path = schema.pop("$ref")
+        # Extract ref name (e.g., "#/$defs/MyType" -> "MyType")
+        ref_name = ref_path.split("/")[-1] if "/" in ref_path else ref_path
+
+        if ref_name in defs:
+            # Merge definition into current schema
+            def_schema = defs[ref_name]
+            if isinstance(def_schema, dict):
+                for k, v in def_schema.items():
+                    if k not in schema:  # Don't overwrite existing
+                        schema[k] = copy.deepcopy(v)
+                # Recursively flatten any refs in merged content
+                _flatten_refs(schema, defs)
+        else:
+            # Unresolved ref: convert to string type
+            schema["type"] = "string"
+            hint = f"(Unresolved $ref: {ref_path})"
+            desc = schema.get("description", "")
+            schema["description"] = f"{desc} {hint}".strip()
+            log.debug(f"[SCHEMA FIX] Unresolved $ref converted to string: {ref_path}")
+
+    # Recurse into children
+    for key, value in list(schema.items()):
+        if isinstance(value, dict):
+            _flatten_refs(value, defs)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _flatten_refs(item, defs)
+
+
+def _score_schema_option(schema: Dict[str, Any]) -> int:
+    """
+    Score a schema branch for anyOf/oneOf selection.
+    Object (3) > Array (2) > Scalar (1) > Null (0)
+
+    Args:
+        schema: Schema branch to score
+
+    Returns:
+        Integer score (higher = more complex/preferred)
+    """
+    if not isinstance(schema, dict):
+        return 0
+
+    if schema.get("properties") or schema.get("type") == "object":
+        return 3
+    if schema.get("items") or schema.get("type") == "array":
+        return 2
+
+    type_val = schema.get("type")
+    if isinstance(type_val, str) and type_val.lower() != "null":
+        return 1
+
+    return 0
+
+
+def _extract_best_schema_from_union(
+    union_array: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Select the best non-null schema from anyOf/oneOf array.
+
+    Args:
+        union_array: List of schema branches
+
+    Returns:
+        Deep copy of the best branch, or None if empty
+    """
+    best_option = None
+    best_score = -1
+
+    for item in union_array:
+        if isinstance(item, dict):
+            score = _score_schema_option(item)
+            if score > best_score:
+                best_score = score
+                best_option = item
+
+    return copy.deepcopy(best_option) if best_option else None
+
+
+def _merge_union_type(schema: Dict[str, Any], union_key: str) -> bool:
+    """
+    Merge anyOf/oneOf into the parent schema.
+
+    Args:
+        schema: Parent schema (mutated)
+        union_key: Either "anyOf" or "oneOf"
+
+    Returns:
+        True if merge was performed
+    """
+    if union_key not in schema:
+        return False
+
+    union_array = schema.get(union_key)
+    if not isinstance(union_array, list):
+        return False
+
+    best_branch = _extract_best_schema_from_union(union_array)
+    if not best_branch:
+        del schema[union_key]
+        return True
+
+    # Merge best branch into schema
+    for k, v in best_branch.items():
+        if k == "properties":
+            if "properties" not in schema:
+                schema["properties"] = {}
+            if isinstance(v, dict):
+                for pk, pv in v.items():
+                    if pk not in schema["properties"]:
+                        schema["properties"][pk] = pv
+        elif k == "required":
+            if "required" not in schema:
+                schema["required"] = []
+            if isinstance(v, list):
+                for rv in v:
+                    if rv not in schema["required"]:
+                        schema["required"].append(rv)
+        elif k not in schema:
+            schema[k] = v
+
+    del schema[union_key]
+    return True
+
+
+def _merge_all_of(schema: Dict[str, Any]) -> bool:
+    """
+    Merge allOf array into the parent schema.
+
+    Args:
+        schema: Parent schema (mutated)
+
+    Returns:
+        True if merge was performed
+    """
+    if "allOf" not in schema:
+        return False
+
+    all_of = schema.pop("allOf")
+    if not isinstance(all_of, list):
+        return True
+
+    merged_properties: Dict[str, Any] = {}
+    merged_required: Set[str] = set()
+
+    for sub_schema in all_of:
+        if not isinstance(sub_schema, dict):
+            continue
+
+        # Merge properties
+        if "properties" in sub_schema and isinstance(sub_schema["properties"], dict):
+            for k, v in sub_schema["properties"].items():
+                if k not in merged_properties:
+                    merged_properties[k] = v
+
+        # Merge required
+        if "required" in sub_schema and isinstance(sub_schema["required"], list):
+            merged_required.update(sub_schema["required"])
+
+        # Merge other fields (first wins)
+        for k, v in sub_schema.items():
+            if k not in ("properties", "required", "allOf") and k not in schema:
+                schema[k] = v
+
+    # Apply merged properties
+    if merged_properties:
+        if "properties" not in schema:
+            schema["properties"] = {}
+        for k, v in merged_properties.items():
+            if k not in schema["properties"]:
+                schema["properties"][k] = v
+
+    # Apply merged required
+    if merged_required:
+        if "required" not in schema:
+            schema["required"] = []
+        for r in merged_required:
+            if r not in schema["required"]:
+                schema["required"].append(r)
+
+    return True
+
+
+def _fix_empty_object(schema: Dict[str, Any]) -> bool:
+    """
+    Fix empty object types that Gemini API rejects.
+    Injects a minimal placeholder property.
+
+    This is the critical fix for Notion MCP and similar tools that have
+    object types without defined properties.
+
+    Args:
+        schema: Schema to fix (mutated)
+
+    Returns:
+        True if fix was applied
+    """
+    if schema.get("type") != "object":
+        return False
+
+    properties = schema.get("properties")
+    has_valid_props = isinstance(properties, dict) and len(properties) > 0
+
+    if has_valid_props:
+        return False
+
+    # Inject placeholder property (same approach as Antigravity-Manager)
+    schema["properties"] = {
+        "reason": {
+            "type": "string",
+            "description": "Reason for calling this tool"
+        }
+    }
+    schema["required"] = ["reason"]
+
+    log.debug("[SCHEMA FIX] Injected placeholder property for empty object")
+    return True
+
+
+def _clean_schema_recursive(schema: Any) -> bool:
+    """
+    Recursively clean schema node.
+
+    Args:
+        schema: Schema to clean (mutated)
+
+    Returns:
+        True if this schema is nullable
+    """
+    if not isinstance(schema, dict):
+        return False
+
+    is_nullable = False
+
+    # Merge allOf first
+    _merge_all_of(schema)
+
+    # Recursively clean children first
+    if "properties" in schema and isinstance(schema["properties"], dict):
+        nullable_keys: Set[str] = set()
+        for k, v in schema["properties"].items():
+            if _clean_schema_recursive(v):
+                nullable_keys.add(k)
+
+        # Remove nullable fields from required
+        if nullable_keys and "required" in schema:
+            if isinstance(schema["required"], list):
+                schema["required"] = [
+                    r for r in schema["required"]
+                    if r not in nullable_keys
+                ]
+                if not schema["required"]:
+                    del schema["required"]
+
+    if "items" in schema:
+        _clean_schema_recursive(schema["items"])
+
+    # Clean anyOf/oneOf branches before merging
+    for union_key in ("anyOf", "oneOf"):
+        if union_key in schema and isinstance(schema[union_key], list):
+            for branch in schema[union_key]:
+                _clean_schema_recursive(branch)
+
+    # Merge anyOf/oneOf
+    _merge_union_type(schema, "anyOf")
+    _merge_union_type(schema, "oneOf")
+
+    # Check if this looks like a schema node
+    looks_like_schema = any(
+        k in schema for k in ("type", "properties", "items", "enum", "anyOf", "oneOf", "allOf")
+    )
+
+    if looks_like_schema:
+        # Migrate constraints to description
+        constraints = [
+            ("minLength", "minLen"), ("maxLength", "maxLen"),
+            ("pattern", "pattern"), ("minimum", "min"), ("maximum", "max"),
+            ("multipleOf", "multipleOf"), ("exclusiveMinimum", "exclMin"),
+            ("exclusiveMaximum", "exclMax"), ("minItems", "minItems"),
+            ("maxItems", "maxItems"), ("format", "format"),
+        ]
+
+        hints = []
+        for field, label in constraints:
+            if field in schema and schema[field] is not None:
+                hints.append(f"{label}: {schema[field]}")
+
+        if hints:
+            suffix = f" [Constraint: {', '.join(hints)}]"
+            desc = schema.get("description", "")
+            if suffix not in desc:
+                schema["description"] = f"{desc}{suffix}".strip()
+
+        # Whitelist filtering - only keep Gemini-supported fields
+        allowed_fields = {"type", "description", "properties", "required", "items", "enum", "title"}
+        keys_to_remove = [k for k in schema.keys() if k not in allowed_fields]
+        for k in keys_to_remove:
+            del schema[k]
+
+        # Handle type field
+        if "type" in schema:
+            type_val = schema["type"]
+            selected_type = None
+
+            if isinstance(type_val, str):
+                lower = type_val.lower()
+                if lower == "null":
+                    is_nullable = True
+                else:
+                    selected_type = lower
+            elif isinstance(type_val, list):
+                for t in type_val:
+                    if isinstance(t, str):
+                        lower = t.lower()
+                        if lower == "null":
+                            is_nullable = True
+                        elif selected_type is None:
+                            selected_type = lower
+
+            schema["type"] = selected_type or "string"
+
+        # Add nullable hint to description
+        if is_nullable:
+            desc = schema.get("description", "")
+            if "nullable" not in desc:
+                schema["description"] = f"{desc} (nullable)".strip()
+
+        # Fix empty objects (critical for Notion MCP)
+        _fix_empty_object(schema)
+
+        # Align required with actual properties
+        if "required" in schema:
+            if "properties" in schema and isinstance(schema["properties"], dict):
+                valid_keys = set(schema["properties"].keys())
+                schema["required"] = [
+                    r for r in schema["required"]
+                    if r in valid_keys
+                ]
+                if not schema["required"]:
+                    del schema["required"]
+            else:
+                del schema["required"]
+
+        # Ensure type is set if properties exist
+        if "properties" in schema and "type" not in schema:
+            schema["type"] = "object"
+
+        # Convert enum values to strings
+        if "enum" in schema and isinstance(schema["enum"], list):
+            schema["enum"] = [
+                str(v) if not isinstance(v, str) else v
+                for v in schema["enum"]
+            ]
+
+    return is_nullable
+
 
 def clean_json_schema(schema: Any) -> Any:
     """
-    清理 JSON Schema，移除下游不支持的字段，并把验证要求追加到 description。
+    Clean JSON Schema for Gemini API compatibility.
+
+    This is an enhanced version ported from Antigravity-Manager that handles:
+    1. $ref/$defs flattening (expand references)
+    2. anyOf/oneOf merging (select best branch)
+    3. allOf merging (combine all branches)
+    4. Empty object injection (add placeholder property)
+    5. Type array normalization (["string", "null"] -> "string")
+    6. Unsupported field removal (whitelist approach)
+    7. Constraint migration to description
+
+    Args:
+        schema: JSON Schema to clean
+
+    Returns:
+        Cleaned schema compatible with Gemini API
     """
     if not isinstance(schema, dict):
         return schema
 
-    # 下游不支持的字段
-    unsupported_keys = {
-        "$schema", "$id", "$ref", "$defs", "definitions", "title",
-        "example", "examples", "readOnly", "writeOnly", "default",
-        "exclusiveMaximum", "exclusiveMinimum", "oneOf", "anyOf", "allOf",
-        "const", "additionalItems", "contains", "patternProperties",
-        "dependencies", "propertyNames", "if", "then", "else",
-        "contentEncoding", "contentMediaType",
-    }
+    # Make a deep copy to avoid mutating input
+    schema = copy.deepcopy(schema)
 
-    validation_fields = {
-        "minLength": "minLength",
-        "maxLength": "maxLength",
-        "minimum": "minimum",
-        "maximum": "maximum",
-        "minItems": "minItems",
-        "maxItems": "maxItems",
-    }
-    fields_to_remove = {"additionalProperties"}
+    # Phase 1: Collect and flatten $refs
+    all_defs: Dict[str, Any] = {}
+    _collect_all_defs(schema, all_defs)
 
-    validations: List[str] = []
-    for field, label in validation_fields.items():
-        if field in schema:
-            validations.append(f"{label}: {schema[field]}")
+    # Remove $defs/definitions from root
+    schema.pop("$defs", None)
+    schema.pop("definitions", None)
 
-    cleaned: Dict[str, Any] = {}
-    for key, value in schema.items():
-        if key in unsupported_keys or key in fields_to_remove or key in validation_fields:
-            continue
+    # Flatten all refs
+    _flatten_refs(schema, all_defs)
 
-        if key == "type" and isinstance(value, list):
-            # type: ["string", "null"] -> type: "string", nullable: true
-            has_null = any(
-                isinstance(t, str) and t.strip() and t.strip().lower() == "null" for t in value
-            )
-            non_null_types = [
-                t.strip()
-                for t in value
-                if isinstance(t, str) and t.strip() and t.strip().lower() != "null"
-            ]
+    # Phase 2: Recursive cleaning
+    _clean_schema_recursive(schema)
 
-            cleaned[key] = non_null_types[0] if non_null_types else "string"
-            if has_null:
-                cleaned["nullable"] = True
-            continue
-
-        if key == "description" and validations:
-            cleaned[key] = f"{value} ({', '.join(validations)})"
-        elif isinstance(value, dict):
-            cleaned[key] = clean_json_schema(value)
-        elif isinstance(value, list):
-            cleaned[key] = [clean_json_schema(item) if isinstance(item, dict) else item for item in value]
-        else:
-            cleaned[key] = value
-
-    if validations and "description" not in cleaned:
-        cleaned["description"] = f"Validation: {', '.join(validations)}"
-
-    # 如果有 properties 但没有显式 type，则补齐为 object
-    if "properties" in cleaned and "type" not in cleaned:
-        cleaned["type"] = "object"
-
-    return cleaned
+    return schema
 
 
 # ============================================================================
