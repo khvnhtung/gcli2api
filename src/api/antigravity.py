@@ -693,13 +693,22 @@ async def non_stream_request(
                         model_key=model_name,
                     )
                     if attempt < max_retries:
+                        # Preheat next credential for fast failover.
+                        if next_cred_task is None:
+                            next_cred_task = asyncio.create_task(
+                                credential_manager.get_valid_credential(
+                                    mode="antigravity",
+                                    model_key=model_name,
+                                    exclude_filenames=list(tried_files),
+                                )
+                            )
                         need_retry = True
                         await asyncio.sleep((await get_retry_rotate_delay_ms()) / 1000.0)
                     else:
                         log.error(f"[ANTIGRAVITY] 达到最大重试次数 ({max_retries})，返回原始错误")
                         return last_error_response
 
-                if strategy != RetryStrategy.NO_RETRY:
+                if not immediate_rotate and strategy != RetryStrategy.NO_RETRY:
                     # 可重试的错误 (429, 503, 529, 500, 401, 403)
                     log.warning(
                         f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), "
