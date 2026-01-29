@@ -327,18 +327,51 @@ async def messages(
             async for chunk in stream_gen:
                 # 检查是否是Response对象（错误情况）
                 if isinstance(chunk, Response):
-                    # 错误响应，不进行转换，直接传递
+                    # 错误响应，转换为 Anthropic 格式
                     error_content = chunk.body if isinstance(chunk.body, bytes) else chunk.body.encode('utf-8')
                     try:
                         gemini_error = json.loads(error_content.decode('utf-8'))
-                        from src.converter.anthropic2gemini import gemini_to_anthropic_response
-                        anthropic_error = gemini_to_anthropic_response(
-                            gemini_error,
-                            real_model,
-                            chunk.status_code
-                        )
+                        
+                        # 提取真正的错误信息
+                        error_message = "Unknown error"
+                        error_type = "api_error"
+                        
+                        # Google 错误格式: {"error": {"code": 400, "message": "{...}", "status": "..."}}
+                        if "error" in gemini_error:
+                            raw_message = gemini_error["error"].get("message", "")
+                            
+                            # 尝试解析嵌套的 JSON 错误消息
+                            try:
+                                nested_error = json.loads(raw_message)
+                                if "error" in nested_error:
+                                    error_message = nested_error["error"].get("message", raw_message)
+                                    error_type = nested_error["error"].get("type", "api_error")
+                                else:
+                                    error_message = raw_message
+                            except (json.JSONDecodeError, TypeError):
+                                error_message = raw_message
+                        
+                        # 为 "Prompt is too long" 添加友好提示
+                        if "too long" in error_message.lower() or "exceeds" in error_message.lower():
+                            error_message = (
+                                f"{error_message}. "
+                                "Suggestion: 1) Use /compact to reduce context "
+                                "2) Start a new conversation "
+                                "3) Use a model with larger context (gemini-3-pro-high)"
+                            )
+                        
+                        # 构建 Anthropic 格式的错误响应
+                        anthropic_error = {
+                            "type": "error",
+                            "error": {
+                                "type": error_type,
+                                "message": error_message
+                            }
+                        }
+                        
                         yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
-                    except Exception:
+                    except Exception as e:
+                        log.error(f"Error parsing error response: {e}")
                         yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
                     return
                 else:
