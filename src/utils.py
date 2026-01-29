@@ -43,6 +43,62 @@ CALLBACK_HOST = "localhost"
 
 # ====================== Model Configuration ======================
 
+# Model alias mapping: short names → canonical upstream names
+# This allows clients to use simpler names like "gemini-3-pro" which map to
+# the actual upstream model names like "gemini-3-pro-high"
+MODEL_ALIASES: dict[str, str] = {
+    # Gemini 3 Pro shortcuts → default to high thinking
+    "gemini-3-pro": "gemini-3-pro-high",
+    "gemini-3-pro-preview": "gemini-3-pro-preview-high",
+    # Gemini 3 Flash shortcuts → default to high thinking
+    "gemini-3-flash": "gemini-3-flash-high",
+    "gemini-3-flash-preview": "gemini-3-flash-preview-high",
+    # Claude model aliases (for OpenCode compatibility)
+    "claude-opus-4-5-thinking": "gemini-3-pro-high",
+    "claude-opus-4-5": "gemini-3-pro-high",
+    "claude-sonnet-4-thinking": "gemini-3-flash-high",
+    "claude-sonnet-4": "gemini-3-flash-high",
+}
+
+
+def apply_model_alias(model_name: str) -> str:
+    """
+    Apply model alias mapping to convert short/friendly names to canonical upstream names.
+
+    This function:
+    1. Preserves feature prefixes (假流式/, 流式抗截断/)
+    2. Preserves thinking suffixes (-high, -low, -medium, etc.)
+    3. Only maps base model names that have explicit aliases
+
+    Args:
+        model_name: The model name from the client request
+
+    Returns:
+        The canonical upstream model name
+    """
+    if not model_name:
+        return model_name
+
+    # Extract feature prefix if present
+    prefix = ""
+    base_name = model_name
+    for feat_prefix in ["假流式/", "流式抗截断/"]:
+        if model_name.startswith(feat_prefix):
+            prefix = feat_prefix
+            base_name = model_name[len(feat_prefix):]
+            break
+
+    # Check if the base name (without prefix) has an alias
+    if base_name in MODEL_ALIASES:
+        mapped = MODEL_ALIASES[base_name]
+        result = f"{prefix}{mapped}" if prefix else mapped
+        log.debug(f"[MODEL ALIAS] Mapped '{model_name}' → '{result}'")
+        return result
+
+    # No alias found, return original
+    return model_name
+
+
 # Default Safety Settings for Google API
 DEFAULT_SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},

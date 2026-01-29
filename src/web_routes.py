@@ -1313,63 +1313,7 @@ async def download_all_creds(
 async def get_config(token: str = Depends(verify_panel_token)):
     """获取当前配置"""
     try:
-        
-
-        # 读取当前配置（包括环境变量和TOML文件中的配置）
-        current_config = {}
-
-        # 基础配置
-        current_config["code_assist_endpoint"] = await config.get_code_assist_endpoint()
-        current_config["credentials_dir"] = await config.get_credentials_dir()
-        current_config["proxy"] = await config.get_proxy_config() or ""
-
-        # 代理端点配置
-        current_config["oauth_proxy_url"] = await config.get_oauth_proxy_url()
-        current_config["googleapis_proxy_url"] = await config.get_googleapis_proxy_url()
-        current_config["resource_manager_api_url"] = await config.get_resource_manager_api_url()
-        current_config["service_usage_api_url"] = await config.get_service_usage_api_url()
-        current_config["antigravity_api_url"] = await config.get_antigravity_api_url()
-
-        # 自动封禁配置
-        current_config["auto_ban_enabled"] = await config.get_auto_ban_enabled()
-        current_config["auto_ban_error_codes"] = await config.get_auto_ban_error_codes()
-
-        # 429重试配置
-        current_config["retry_429_max_retries"] = await config.get_retry_429_max_retries()
-        current_config["retry_429_enabled"] = await config.get_retry_429_enabled()
-        current_config["retry_429_interval"] = await config.get_retry_429_interval()
-
-        # 抗截断配置
-        current_config["anti_truncation_max_attempts"] = await config.get_anti_truncation_max_attempts()
-
-        # 兼容性配置
-        current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
-
-        # 思维链返回配置
-        current_config["return_thoughts_to_frontend"] = await config.get_return_thoughts_to_frontend()
-
-        # Antigravity流式转非流式配置
-        current_config["antigravity_stream2nostream"] = await config.get_antigravity_stream2nostream()
-
-        # 服务器配置
-        current_config["host"] = await config.get_server_host()
-        current_config["port"] = await config.get_server_port()
-        current_config["api_password"] = await config.get_api_password()
-        current_config["panel_password"] = await config.get_panel_password()
-        current_config["password"] = await config.get_server_password()
-
-        # 从存储系统读取配置
-        storage_adapter = await get_storage_adapter()
-        storage_config = await storage_adapter.get_all_config()
-
-        # 获取环境变量锁定的配置键
-        env_locked_keys = get_env_locked_keys()
-
-        # 合并存储系统配置（不覆盖环境变量）
-        for key, value in storage_config.items():
-            if key not in env_locked_keys:
-                current_config[key] = value
-
+        current_config, env_locked_keys = await config.build_effective_config_for_panel()
         return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys)})
 
     except Exception as e:
@@ -1408,6 +1352,26 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="429重试间隔必须是有效的数字")
 
+        if "pool_wait_enabled" in new_config:
+            if not isinstance(new_config["pool_wait_enabled"], bool):
+                raise HTTPException(status_code=400, detail="无可用凭证等待开关必须是布尔值")
+
+        if "pool_wait_max_seconds" in new_config:
+            try:
+                v = float(new_config["pool_wait_max_seconds"])
+                if v < 0 or v > 3600:
+                    raise HTTPException(status_code=400, detail="最大等待秒数必须在0-3600之间")
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="最大等待秒数必须是有效的数字")
+
+        if "pool_wait_poll_seconds" in new_config:
+            try:
+                v = float(new_config["pool_wait_poll_seconds"])
+                if v < 0.2 or v > 30:
+                    raise HTTPException(status_code=400, detail="轮询间隔必须在0.2-30秒之间")
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="轮询间隔必须是有效的数字")
+
         if "anti_truncation_max_attempts" in new_config:
             if (
                 not isinstance(new_config["anti_truncation_max_attempts"], int)
@@ -1417,6 +1381,18 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(
                     status_code=400, detail="抗截断最大重试次数必须是1-10之间的整数"
                 )
+
+        if "tool_result_compression_enabled" in new_config:
+            if not isinstance(new_config["tool_result_compression_enabled"], bool):
+                raise HTTPException(status_code=400, detail="工具结果压缩开关必须是布尔值")
+
+        if "tool_result_max_chars" in new_config:
+            if (
+                not isinstance(new_config["tool_result_max_chars"], int)
+                or new_config["tool_result_max_chars"] < 1000
+                or new_config["tool_result_max_chars"] > 2_000_000
+            ):
+                raise HTTPException(status_code=400, detail="工具结果最大字符数必须在1000-2000000之间")
 
         if "compatibility_mode_enabled" in new_config:
             if not isinstance(new_config["compatibility_mode_enabled"], bool):
@@ -1429,6 +1405,60 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         if "antigravity_stream2nostream" in new_config:
             if not isinstance(new_config["antigravity_stream2nostream"], bool):
                 raise HTTPException(status_code=400, detail="Antigravity流式转非流式开关必须是布尔值")
+
+        if "context_compression_enabled" in new_config:
+            if not isinstance(new_config["context_compression_enabled"], bool):
+                raise HTTPException(status_code=400, detail="上下文压缩开关必须是布尔值")
+
+        if "context_compression_trigger_input_tokens" in new_config:
+            if (
+                not isinstance(new_config["context_compression_trigger_input_tokens"], int)
+                or new_config["context_compression_trigger_input_tokens"] < 10_000
+                or new_config["context_compression_trigger_input_tokens"] > 5_000_000
+            ):
+                raise HTTPException(status_code=400, detail="上下文压缩触发阈值必须在10000-5000000之间")
+
+        if "context_compression_keep_last_messages" in new_config:
+            if (
+                not isinstance(new_config["context_compression_keep_last_messages"], int)
+                or new_config["context_compression_keep_last_messages"] < 0
+                or new_config["context_compression_keep_last_messages"] > 100
+            ):
+                raise HTTPException(status_code=400, detail="压缩后保留消息数必须在0-100之间")
+
+        if "context_compression_summary_model" in new_config:
+            if not isinstance(new_config["context_compression_summary_model"], str):
+                raise HTTPException(status_code=400, detail="压缩摘要模型必须是字符串")
+
+        if "context_compression_summary_max_output_tokens" in new_config:
+            if (
+                not isinstance(new_config["context_compression_summary_max_output_tokens"], int)
+                or new_config["context_compression_summary_max_output_tokens"] < 256
+                or new_config["context_compression_summary_max_output_tokens"] > 64_000
+            ):
+                raise HTTPException(status_code=400, detail="压缩摘要最大输出tokens必须在256-64000之间")
+
+        if "context_compression_force_on_prompt_too_long" in new_config:
+            if not isinstance(new_config["context_compression_force_on_prompt_too_long"], bool):
+                raise HTTPException(status_code=400, detail="超长提示词自动重试开关必须是布尔值")
+
+        if "realtime_quota_refresh_enabled" in new_config:
+            if not isinstance(new_config["realtime_quota_refresh_enabled"], bool):
+                raise HTTPException(status_code=400, detail="实时配额刷新开关必须是布尔值")
+
+        if "realtime_quota_refresh_timeout_seconds" in new_config:
+            v = new_config["realtime_quota_refresh_timeout_seconds"]
+            if not isinstance(v, (int, float)) or v < 1 or v > 120:
+                raise HTTPException(status_code=400, detail="实时配额刷新超时必须在1-120秒之间")
+
+        if "realtime_quota_refresh_cache_ttl_seconds" in new_config:
+            v = new_config["realtime_quota_refresh_cache_ttl_seconds"]
+            if not isinstance(v, int) or v < 0 or v > 3600:
+                raise HTTPException(status_code=400, detail="实时配额刷新缓存TTL必须在0-3600秒之间")
+
+        if "realtime_quota_refresh_fallback_to_earliest_reset" in new_config:
+            if not isinstance(new_config["realtime_quota_refresh_fallback_to_earliest_reset"], bool):
+                raise HTTPException(status_code=400, detail="实时配额刷新最早reset兜底开关必须是布尔值")
 
         # 验证服务器配置
         if "host" in new_config:
@@ -1456,7 +1486,7 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(status_code=400, detail="访问密码必须是字符串")
 
         # 获取环境变量锁定的配置键
-        env_locked_keys = get_env_locked_keys()
+        env_locked_keys = config.get_env_locked_keys()
 
         # 直接使用存储适配器保存配置
         storage_adapter = await get_storage_adapter()
@@ -1958,7 +1988,3 @@ async def get_version_info(check_update: bool = False):
             "success": False,
             "error": str(e)
         })
-
-
-
-

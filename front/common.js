@@ -2212,11 +2212,43 @@ function populateConfigForm() {
     setConfigField('retry429MaxRetries', c.retry_429_max_retries || 20);
     setConfigField('retry429Interval', c.retry_429_interval || 0.1);
 
+    // Pool exhaustion wait
+    const poolWaitEnabled = c.pool_wait_enabled;
+    document.getElementById('poolWaitEnabled').checked = Boolean(poolWaitEnabled !== false);
+    setConfigField('poolWaitMaxSeconds', c.pool_wait_max_seconds || 60);
+    setConfigField('poolWaitPollSeconds', c.pool_wait_poll_seconds || 1.0);
+
     document.getElementById('compatibilityModeEnabled').checked = Boolean(c.compatibility_mode_enabled);
     document.getElementById('returnThoughtsToFrontend').checked = Boolean(c.return_thoughts_to_frontend !== false);
     document.getElementById('antigravityStream2nostream').checked = Boolean(c.antigravity_stream2nostream !== false);
 
     setConfigField('antiTruncationMaxAttempts', c.anti_truncation_max_attempts || 3);
+
+    // Tool result compression
+    const toolCompEnabled = c.tool_result_compression_enabled;
+    document.getElementById('toolResultCompressionEnabled').checked = Boolean(toolCompEnabled !== false);
+    setConfigField('toolResultMaxChars', c.tool_result_max_chars || 200000);
+
+    // Context compression (checkpoint)
+    const ctxEnabled = c.context_compression_enabled;
+    document.getElementById('contextCompressionEnabled').checked = Boolean(ctxEnabled !== false);
+    setConfigField('contextCompressionTriggerInputTokens', c.context_compression_trigger_input_tokens || 140000);
+    setConfigField('contextCompressionKeepLastMessages', c.context_compression_keep_last_messages || 4);
+    setConfigField('contextCompressionSummaryModel', c.context_compression_summary_model || 'gemini-3-flash');
+    setConfigField(
+        'contextCompressionSummaryMaxOutputTokens',
+        c.context_compression_summary_max_output_tokens || 8000
+    );
+    const forceRetry = c.context_compression_force_on_prompt_too_long;
+    document.getElementById('contextCompressionForceOnPromptTooLong').checked = Boolean(forceRetry !== false);
+
+    // Realtime quota refresh
+    const quotaEnabled = c.realtime_quota_refresh_enabled;
+    document.getElementById('realtimeQuotaRefreshEnabled').checked = Boolean(quotaEnabled !== false);
+    setConfigField('realtimeQuotaRefreshTimeoutSeconds', c.realtime_quota_refresh_timeout_seconds || 20);
+    setConfigField('realtimeQuotaRefreshCacheTtlSeconds', c.realtime_quota_refresh_cache_ttl_seconds || 30);
+    const quotaFallback = c.realtime_quota_refresh_fallback_to_earliest_reset;
+    document.getElementById('realtimeQuotaRefreshFallbackToEarliestReset').checked = Boolean(quotaFallback !== false);
 }
 
 function setConfigField(fieldId, value) {
@@ -2262,10 +2294,38 @@ async function saveConfig() {
             retry_429_enabled: getChecked('retry429Enabled'),
             retry_429_max_retries: getInt('retry429MaxRetries', 20),
             retry_429_interval: getFloat('retry429Interval', 0.1),
+            pool_wait_enabled: getChecked('poolWaitEnabled'),
+            pool_wait_max_seconds: getFloat('poolWaitMaxSeconds', 60),
+            pool_wait_poll_seconds: getFloat('poolWaitPollSeconds', 1.0),
             compatibility_mode_enabled: getChecked('compatibilityModeEnabled'),
             return_thoughts_to_frontend: getChecked('returnThoughtsToFrontend'),
             antigravity_stream2nostream: getChecked('antigravityStream2nostream'),
-            anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3)
+            anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
+
+            tool_result_compression_enabled: getChecked('toolResultCompressionEnabled'),
+            tool_result_max_chars: getInt('toolResultMaxChars', 200000),
+
+            context_compression_enabled: getChecked('contextCompressionEnabled'),
+            context_compression_trigger_input_tokens: getInt(
+                'contextCompressionTriggerInputTokens',
+                140000
+            ),
+            context_compression_keep_last_messages: getInt('contextCompressionKeepLastMessages', 4),
+            context_compression_summary_model: getValue('contextCompressionSummaryModel', 'gemini-3-flash'),
+            context_compression_summary_max_output_tokens: getInt(
+                'contextCompressionSummaryMaxOutputTokens',
+                8000
+            ),
+            context_compression_force_on_prompt_too_long: getChecked(
+                'contextCompressionForceOnPromptTooLong'
+            ),
+
+            realtime_quota_refresh_enabled: getChecked('realtimeQuotaRefreshEnabled'),
+            realtime_quota_refresh_timeout_seconds: getFloat('realtimeQuotaRefreshTimeoutSeconds', 20),
+            realtime_quota_refresh_cache_ttl_seconds: getInt('realtimeQuotaRefreshCacheTtlSeconds', 30),
+            realtime_quota_refresh_fallback_to_earliest_reset: getChecked(
+                'realtimeQuotaRefreshFallbackToEarliestReset'
+            )
         };
 
         const response = await fetch('./config/save', {

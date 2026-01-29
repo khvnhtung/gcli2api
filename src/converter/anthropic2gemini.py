@@ -1398,10 +1398,9 @@ async def gemini_stream_to_anthropic_stream(
             # Check if this is an Anthropic error event (from gemini_chunk_wrapper)
             # Format: {"type": "error", "error": {"type": "...", "message": "..."}}
             if data.get("type") == "error" and "error" in data:
-                log.warning(f"[GEMINI_TO_ANTHROPIC] Received error event, passing through: {data}")
-                # Pass through the error event as-is
-                yield chunk
-                # Don't emit message_stop after error
+                log.warning(f"[GEMINI_TO_ANTHROPIC] Received error event, emitting Anthropic error SSE: {data}")
+                # Emit a proper Anthropic SSE error event.
+                yield _sse_event("error", data)
                 return
 
             # 处理 GeminiCLI 的 response 包装格式

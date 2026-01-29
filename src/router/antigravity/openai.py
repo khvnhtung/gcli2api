@@ -25,6 +25,7 @@ from log import log
 
 # 本地模块 - 工具和认证
 from src.utils import (
+    apply_model_alias,
     get_base_model_from_feature_model,
     is_anti_truncation_model,
     is_fake_streaming_model,
@@ -81,6 +82,9 @@ async def chat_completions(
     use_fake_streaming = is_fake_streaming_model(openai_request.model)
     use_anti_truncation = is_anti_truncation_model(openai_request.model)
     real_model = get_base_model_from_feature_model(openai_request.model)
+
+    # Apply model alias mapping (e.g., gemini-3-pro → gemini-3-pro-high)
+    real_model = apply_model_alias(real_model)
 
     # 获取流式标志
     is_streaming = openai_request.stream

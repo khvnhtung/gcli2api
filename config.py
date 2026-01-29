@@ -44,12 +44,116 @@ ENV_MAPPINGS = {
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
+
+    # Context compression (checkpoint + fork)
+    "CONTEXT_COMPRESSION_ENABLED": "context_compression_enabled",
+    "CONTEXT_COMPRESSION_TRIGGER_INPUT_TOKENS": "context_compression_trigger_input_tokens",
+    "CONTEXT_COMPRESSION_KEEP_LAST_MESSAGES": "context_compression_keep_last_messages",
+    "CONTEXT_COMPRESSION_SUMMARY_MODEL": "context_compression_summary_model",
+    "CONTEXT_COMPRESSION_SUMMARY_MAX_OUTPUT_TOKENS": "context_compression_summary_max_output_tokens",
+    "CONTEXT_COMPRESSION_FORCE_ON_PROMPT_TOO_LONG": "context_compression_force_on_prompt_too_long",
+
+    # Realtime quota refresh (429 w/out explicit retry time)
+    "REALTIME_QUOTA_REFRESH_ENABLED": "realtime_quota_refresh_enabled",
+    "REALTIME_QUOTA_REFRESH_TIMEOUT_SECONDS": "realtime_quota_refresh_timeout_seconds",
+    "REALTIME_QUOTA_REFRESH_CACHE_TTL_SECONDS": "realtime_quota_refresh_cache_ttl_seconds",
+    "REALTIME_QUOTA_REFRESH_FALLBACK_TO_EARLIEST_RESET": "realtime_quota_refresh_fallback_to_earliest_reset",
+
+    # Pool exhaustion wait (avoid failing when all creds are cooled)
+    "POOL_WAIT_ENABLED": "pool_wait_enabled",
+    "POOL_WAIT_MAX_SECONDS": "pool_wait_max_seconds",
+    "POOL_WAIT_POLL_SECONDS": "pool_wait_poll_seconds",
     "HOST": "host",
     "PORT": "port",
     "API_PASSWORD": "api_password",
     "PANEL_PASSWORD": "panel_password",
     "PASSWORD": "password",
 }
+
+
+def get_env_locked_keys() -> set[str]:
+    """Return config keys locked by environment variables.
+
+    Any key with a corresponding env var present should be treated as read-only
+    from the web panel.
+    """
+    locked: set[str] = set()
+    for env_var, key in ENV_MAPPINGS.items():
+        if os.getenv(env_var):
+            locked.add(key)
+    return locked
+
+
+async def build_effective_config_for_panel() -> tuple[dict[str, Any], set[str]]:
+    """Build the effective config dict used by the web control panel.
+
+    This centralizes the config surface area so future knobs only need to be
+    added here (and in the frontend), instead of being scattered across routes.
+    """
+    from src.storage_adapter import get_storage_adapter
+
+    current_config: dict[str, Any] = {}
+
+    # Core endpoints
+    current_config["code_assist_endpoint"] = await get_code_assist_endpoint()
+    current_config["credentials_dir"] = await get_credentials_dir()
+    current_config["proxy"] = await get_proxy_config() or ""
+    current_config["oauth_proxy_url"] = await get_oauth_proxy_url()
+    current_config["googleapis_proxy_url"] = await get_googleapis_proxy_url()
+    current_config["resource_manager_api_url"] = await get_resource_manager_api_url()
+    current_config["service_usage_api_url"] = await get_service_usage_api_url()
+    current_config["antigravity_api_url"] = await get_antigravity_api_url()
+
+    # Behavior knobs
+    current_config["auto_ban_enabled"] = await get_auto_ban_enabled()
+    current_config["auto_ban_error_codes"] = await get_auto_ban_error_codes()
+    current_config["retry_429_max_retries"] = await get_retry_429_max_retries()
+    current_config["retry_429_enabled"] = await get_retry_429_enabled()
+    current_config["retry_429_interval"] = await get_retry_429_interval()
+    current_config["anti_truncation_max_attempts"] = await get_anti_truncation_max_attempts()
+    current_config["tool_result_max_chars"] = await get_tool_result_max_chars()
+    current_config["tool_result_compression_enabled"] = await get_tool_result_compression_enabled()
+    current_config["compatibility_mode_enabled"] = await get_compatibility_mode_enabled()
+    current_config["return_thoughts_to_frontend"] = await get_return_thoughts_to_frontend()
+    current_config["antigravity_stream2nostream"] = await get_antigravity_stream2nostream()
+
+    # Context compression
+    current_config["context_compression_enabled"] = await get_context_compression_enabled()
+    current_config["context_compression_trigger_input_tokens"] = await get_context_compression_trigger_input_tokens()
+    current_config["context_compression_keep_last_messages"] = await get_context_compression_keep_last_messages()
+    current_config["context_compression_summary_model"] = await get_context_compression_summary_model()
+    current_config["context_compression_summary_max_output_tokens"] = await get_context_compression_summary_max_output_tokens()
+    current_config["context_compression_force_on_prompt_too_long"] = await get_context_compression_force_on_prompt_too_long()
+
+    # Realtime quota refresh
+    current_config["realtime_quota_refresh_enabled"] = await get_realtime_quota_refresh_enabled()
+    current_config["realtime_quota_refresh_timeout_seconds"] = await get_realtime_quota_refresh_timeout_seconds()
+    current_config["realtime_quota_refresh_cache_ttl_seconds"] = await get_realtime_quota_refresh_cache_ttl_seconds()
+    current_config["realtime_quota_refresh_fallback_to_earliest_reset"] = (
+        await get_realtime_quota_refresh_fallback_to_earliest_reset()
+    )
+
+    # Pool exhaustion wait
+    current_config["pool_wait_enabled"] = await get_pool_wait_enabled()
+    current_config["pool_wait_max_seconds"] = await get_pool_wait_max_seconds()
+    current_config["pool_wait_poll_seconds"] = await get_pool_wait_poll_seconds()
+
+    # Server config
+    current_config["host"] = await get_server_host()
+    current_config["port"] = await get_server_port()
+    current_config["api_password"] = await get_api_password()
+    current_config["panel_password"] = await get_panel_password()
+    current_config["password"] = await get_server_password()
+
+    # Merge stored config (don't override env-locked)
+    storage_adapter = await get_storage_adapter()
+    storage_config = await storage_adapter.get_all_config()
+    env_locked_keys = get_env_locked_keys()
+    for key, value in storage_config.items():
+        if key not in env_locked_keys:
+            current_config[key] = value
+
+    return current_config, env_locked_keys
 
 
 # ====================== 配置系统 ======================
@@ -81,8 +185,10 @@ async def reload_config():
         storage_adapter = await get_storage_adapter()
 
         # 如果后端支持 reload_config_cache，调用它
-        if hasattr(storage_adapter._backend, 'reload_config_cache'):
-            await storage_adapter._backend.reload_config_cache()
+        backend = getattr(storage_adapter, "_backend", None)
+        reload_fn = getattr(backend, "reload_config_cache", None) if backend else None
+        if reload_fn:
+            await reload_fn()
 
         # 重新加载配置缓存
         _config_cache = await storage_adapter.get_all_config()
@@ -448,6 +554,126 @@ async def get_antigravity_stream2nostream() -> bool:
         return env_value.lower() in ("true", "1", "yes", "on")
 
     return bool(await get_config_value("antigravity_stream2nostream", True))
+
+
+async def get_context_compression_enabled() -> bool:
+    """Enable checkpoint-based context compression."""
+    env_value = os.getenv("CONTEXT_COMPRESSION_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("context_compression_enabled", True))
+
+
+async def get_context_compression_trigger_input_tokens() -> int:
+    """Trigger checkpoint when estimated input tokens exceed this value."""
+    env_value = os.getenv("CONTEXT_COMPRESSION_TRIGGER_INPUT_TOKENS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("context_compression_trigger_input_tokens", 140000))
+
+
+async def get_context_compression_keep_last_messages() -> int:
+    """How many tail messages to keep after checkpointing."""
+    env_value = os.getenv("CONTEXT_COMPRESSION_KEEP_LAST_MESSAGES")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("context_compression_keep_last_messages", 4))
+
+
+async def get_context_compression_summary_model() -> str:
+    """Model used to generate the checkpoint summary."""
+    return str(
+        await get_config_value(
+            "context_compression_summary_model", "gemini-3-flash", "CONTEXT_COMPRESSION_SUMMARY_MODEL"
+        )
+    )
+
+
+async def get_context_compression_summary_max_output_tokens() -> int:
+    """Max output tokens for the checkpoint summary generation call."""
+    env_value = os.getenv("CONTEXT_COMPRESSION_SUMMARY_MAX_OUTPUT_TOKENS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("context_compression_summary_max_output_tokens", 8000))
+
+
+async def get_context_compression_force_on_prompt_too_long() -> bool:
+    """If enabled, retry once with checkpoint when upstream says prompt too long."""
+    env_value = os.getenv("CONTEXT_COMPRESSION_FORCE_ON_PROMPT_TOO_LONG")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("context_compression_force_on_prompt_too_long", True))
+
+
+async def get_realtime_quota_refresh_enabled() -> bool:
+    """Enable realtime quota refresh to get precise reset_time for 429s."""
+    env_value = os.getenv("REALTIME_QUOTA_REFRESH_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("realtime_quota_refresh_enabled", True))
+
+
+async def get_realtime_quota_refresh_timeout_seconds() -> float:
+    env_value = os.getenv("REALTIME_QUOTA_REFRESH_TIMEOUT_SECONDS")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass
+    return float(await get_config_value("realtime_quota_refresh_timeout_seconds", 20.0))
+
+
+async def get_realtime_quota_refresh_cache_ttl_seconds() -> int:
+    env_value = os.getenv("REALTIME_QUOTA_REFRESH_CACHE_TTL_SECONDS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("realtime_quota_refresh_cache_ttl_seconds", 30))
+
+
+async def get_realtime_quota_refresh_fallback_to_earliest_reset() -> bool:
+    env_value = os.getenv("REALTIME_QUOTA_REFRESH_FALLBACK_TO_EARLIEST_RESET")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("realtime_quota_refresh_fallback_to_earliest_reset", True))
+
+
+async def get_pool_wait_enabled() -> bool:
+    env_value = os.getenv("POOL_WAIT_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("pool_wait_enabled", True))
+
+
+async def get_pool_wait_max_seconds() -> float:
+    env_value = os.getenv("POOL_WAIT_MAX_SECONDS")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass
+    return float(await get_config_value("pool_wait_max_seconds", 60.0))
+
+
+async def get_pool_wait_poll_seconds() -> float:
+    env_value = os.getenv("POOL_WAIT_POLL_SECONDS")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass
+    return float(await get_config_value("pool_wait_poll_seconds", 1.0))
 
 
 async def get_oauth_proxy_url() -> str:

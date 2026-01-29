@@ -4,12 +4,14 @@
 
 import time
 from datetime import datetime, timezone
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 from log import log
 
 from src.google_oauth_api import Credentials
 from src.storage_adapter import get_storage_adapter
+
 
 class CredentialManager:
     """
@@ -50,6 +52,7 @@ class CredentialManager:
         mode: str = "geminicli",
         model_key: Optional[str] = None,
         exclude_filenames: Optional[List[str]] = None,
+        log_no_credential: bool = True,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
         获取有效的凭证 - 随机负载均衡版
@@ -73,7 +76,7 @@ class CredentialManager:
 
             # 如果没有可用凭证，直接返回None
             if not result:
-                if attempt == 0:
+                if attempt == 0 and log_no_credential:
                     log.warning(f"没有可用凭证 (mode={mode}, model_key={model_key})")
                 return None
 
@@ -100,6 +103,82 @@ class CredentialManager:
         # 重试次数用尽
         log.error(f"重试{max_retries}次后仍无可用凭证 (mode={mode}, model_key={model_key})")
         return None
+
+
+    async def wait_for_valid_credential(
+        self,
+        *,
+        mode: str,
+        model_key: Optional[str],
+        exclude_filenames: Optional[List[str]],
+        max_wait_seconds: float,
+        poll_seconds: float,
+    ) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """Wait for a valid credential to become available.
+
+        This is used when the entire pool is temporarily cooled down.
+        It polls until either a credential becomes available or max_wait_seconds is reached.
+        """
+        await self._ensure_initialized()
+
+        try:
+            max_wait = float(max_wait_seconds)
+        except Exception:
+            max_wait = 0.0
+        try:
+            poll = float(poll_seconds)
+        except Exception:
+            poll = 1.0
+
+        if max_wait <= 0:
+            return None
+        if poll <= 0:
+            poll = 1.0
+
+        start = time.time()
+
+        while True:
+            cred = await self.get_valid_credential(
+                mode=mode,
+                model_key=model_key,
+                exclude_filenames=exclude_filenames,
+                log_no_credential=False,
+            )
+            if cred:
+                return cred
+
+            # If exclude list blocks everything, retry once without exclusion.
+            if exclude_filenames:
+                cred_any = await self.get_valid_credential(
+                    mode=mode,
+                    model_key=model_key,
+                    exclude_filenames=None,
+                    log_no_credential=False,
+                )
+                if cred_any:
+                    return cred_any
+
+            elapsed = time.time() - start
+            if elapsed >= max_wait:
+                return None
+
+            # Compute next sleep based on earliest cooldown if available.
+            snapshot = await self.get_model_availability_snapshot(
+                mode=mode, model_key=model_key, exclude_filenames=None
+            )
+            earliest = snapshot.get("earliest_model_cooldown_until")
+
+            remaining = max_wait - elapsed
+            sleep_s = min(poll, remaining)
+            try:
+                if earliest:
+                    until = float(earliest) - time.time()
+                    if until > 0:
+                        sleep_s = min(sleep_s, max(0.2, until))
+            except Exception:
+                pass
+
+            await asyncio.sleep(max(0.2, sleep_s))
 
 
     async def get_model_availability_snapshot(

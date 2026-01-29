@@ -1861,6 +1861,30 @@
                             </div>
                         </div>
 
+                        <div class="config-group">
+                            <h4>无可用凭证等待</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="poolWaitEnabled" class="config-checkbox" />
+                                    启用等待而不是立即失败
+                                </label>
+                                <small class="config-note">当所有账号都处于模型级冷却时，服务端等待一段时间再继续请求</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="poolWaitMaxSeconds">最大等待（秒）:</label>
+                                <input type="number" id="poolWaitMaxSeconds" class="config-input" min="0" max="3600" />
+                                <small class="config-note">默认 60；超过后仍无可用账号则返回 429 + Retry-After</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="poolWaitPollSeconds">轮询间隔（秒）:</label>
+                                <input type="number" id="poolWaitPollSeconds" class="config-input" min="0.2" max="30" step="0.1" />
+                                <small class="config-note">默认 1.0；越小越灵敏但更频繁查询</small>
+                            </div>
+                        </div>
+
 
                         <div class="config-group">
                             <h4>兼容性配置</h4>
@@ -1928,6 +1952,100 @@
                                         <li>例如: "gemini-2.5-pro-流式抗截断"</li>
                                     </ul>
                                 </div>
+                            </div>
+                        </div>
+
+                        <div class="config-group">
+                            <h4>工具结果压缩</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="toolResultCompressionEnabled" class="config-checkbox" />
+                                    启用工具结果压缩
+                                </label>
+                                <small class="config-note">对 tool_result / webfetch / snapshot 等超大输出做清理和截断，避免上下文爆炸</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="toolResultMaxChars">工具结果最大字符数:</label>
+                                <input type="number" id="toolResultMaxChars" class="config-input" min="1000" max="2000000" />
+                                <small class="config-note">默认 200000；越小越省上下文，但可能丢细节</small>
+                            </div>
+                        </div>
+
+                        <div class="config-group">
+                            <h4>上下文压缩（Checkpoint）</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="contextCompressionEnabled" class="config-checkbox" />
+                                    启用自动Checkpoint
+                                </label>
+                                <small class="config-note">当历史过长时，自动用 gemini-3-flash 生成状态快照并压缩历史</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="contextCompressionTriggerInputTokens">触发阈值（估算输入tokens）:</label>
+                                <input type="number" id="contextCompressionTriggerInputTokens" class="config-input" min="10000" max="5000000" />
+                                <small class="config-note">默认 140000；越小越激进，越大越保守</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="contextCompressionKeepLastMessages">压缩后保留尾部消息数:</label>
+                                <input type="number" id="contextCompressionKeepLastMessages" class="config-input" min="0" max="100" />
+                                <small class="config-note">默认 4；用于保留最近对话和工具回合，降低断链风险</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="contextCompressionSummaryModel">摘要模型:</label>
+                                <input type="text" id="contextCompressionSummaryModel" class="config-input" placeholder="gemini-3-flash" />
+                                <small class="config-note">默认 gemini-3-flash</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="contextCompressionSummaryMaxOutputTokens">摘要最大输出tokens:</label>
+                                <input type="number" id="contextCompressionSummaryMaxOutputTokens" class="config-input" min="256" max="64000" />
+                                <small class="config-note">默认 8000；越大越详细，越小越省配额</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="contextCompressionForceOnPromptTooLong" class="config-checkbox" />
+                                    遇到Prompt超长自动重试一次
+                                </label>
+                                <small class="config-note">上游返回"too long / exceeds"时，自动checkpoint并重试一次（仅非流式）</small>
+                            </div>
+                        </div>
+
+                        <div class="config-group">
+                            <h4>实时配额刷新（429 精准等待）</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="realtimeQuotaRefreshEnabled" class="config-checkbox" />
+                                    启用实时配额刷新
+                                </label>
+                                <small class="config-note">当 429 没有明确 Retry-After / quotaResetTimeStamp / quotaResetDelay 时，主动调用 fetchAvailableModels 获取 quotaInfo.resetTime</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="realtimeQuotaRefreshTimeoutSeconds">刷新超时（秒）:</label>
+                                <input type="number" id="realtimeQuotaRefreshTimeoutSeconds" class="config-input" min="1" max="120" />
+                                <small class="config-note">默认 20；过小可能误判，过大会增加请求延迟</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="realtimeQuotaRefreshCacheTtlSeconds">结果缓存TTL（秒）:</label>
+                                <input type="number" id="realtimeQuotaRefreshCacheTtlSeconds" class="config-input" min="0" max="3600" />
+                                <small class="config-note">默认 30；用于削峰避免重复刷新</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="realtimeQuotaRefreshFallbackToEarliestReset" class="config-checkbox" />
+                                    找不到目标模型时使用最早resetTime兜底
+                                </label>
+                                <small class="config-note">更保守的等待策略，减少反复429</small>
                             </div>
                         </div>
 

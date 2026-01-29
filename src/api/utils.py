@@ -5,6 +5,9 @@ Base API Client - 共用的 API 客户端基础功能
 
 import asyncio
 import json
+import math
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -246,7 +249,8 @@ async def record_api_call_error(
 
 async def parse_and_log_cooldown(
     error_text: str,
-    mode: str = "geminicli"
+    mode: str = "geminicli",
+    retry_after_header: Optional[str] = None,
 ) -> Optional[float]:
     """
     解析并记录冷却时间
@@ -258,9 +262,23 @@ async def parse_and_log_cooldown(
     Returns:
         冷却截止时间（Unix时间戳），如果解析失败则返回None
     """
+    # 1) Retry-After header is most explicit.
+    if retry_after_header:
+        try:
+            sec = int(str(retry_after_header).strip())
+            if sec > 0:
+                cooldown_until = time.time() + sec
+                log.info(
+                    f"[{mode.upper()}] Retry-After={sec}s => cooldown_until={datetime.fromtimestamp(cooldown_until, timezone.utc).isoformat()}"
+                )
+                return cooldown_until
+        except Exception:
+            pass
+
+    # 2) Google JSON: quotaResetTimeStamp / quotaResetDelay
     try:
         error_data = json.loads(error_text)
-        cooldown_until = parse_quota_reset_timestamp(error_data)
+        cooldown_until = parse_quota_reset_time(error_data)
         if cooldown_until:
             log.info(
                 f"[{mode.upper()}] 检测到quota冷却时间: "
@@ -269,6 +287,32 @@ async def parse_and_log_cooldown(
             return cooldown_until
     except Exception as parse_err:
         log.debug(f"[{mode.upper()}] Failed to parse cooldown time: {parse_err}")
+
+    # 3) Regex fallbacks (OpenAI-ish text bodies)
+    try:
+        txt = (error_text or "").strip()
+        if not txt:
+            return None
+
+        m = re.search(r"(?i)try again in\s+(\d+)m\s*(\d+)s", txt)
+        if m:
+            sec = int(m.group(1)) * 60 + int(m.group(2))
+            return time.time() + max(1, sec)
+
+        m = re.search(r"(?i)(?:try again in|backoff for|wait)\s*(\d+)s", txt)
+        if m:
+            return time.time() + max(1, int(m.group(1)))
+
+        m = re.search(r"(?i)retry after\s*(\d+)\s*second", txt)
+        if m:
+            return time.time() + max(1, int(m.group(1)))
+
+        m = re.search(r"\(wait\s*(\d+)s\)", txt)
+        if m:
+            return time.time() + max(1, int(m.group(1)))
+    except Exception:
+        pass
+
     return None
 
 
@@ -473,16 +517,42 @@ async def collect_streaming_response(stream_generator) -> Response:
     )
 
 
-def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
+_DURATION_RE = re.compile(
+    r"(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s)?(?:(?P<milliseconds>\d+(?:\.\d+)?)ms)?$"
+)
+
+
+def _parse_duration_string_seconds(s: str) -> Optional[int]:
+    if not s or not isinstance(s, str):
+        return None
+    m = _DURATION_RE.match(s.strip())
+    if not m:
+        return None
+    try:
+        hours = int(m.group("hours") or 0)
+        minutes = int(m.group("minutes") or 0)
+        seconds = float(m.group("seconds") or 0.0)
+        ms = float(m.group("milliseconds") or 0.0)
+        total = hours * 3600 + minutes * 60 + int(math.ceil(seconds)) + int(math.ceil(ms / 1000.0))
+        return int(total) if total > 0 else None
+    except Exception:
+        return None
+
+
+def parse_quota_reset_time(error_response: dict) -> Optional[float]:
     """
-    从Google API错误响应中提取quota重置时间戳
+    从Google API错误响应中提取quota重置时间
 
     Args:
         error_response: Google API返回的错误响应字典
 
     Returns:
-        Unix时间戳（秒），如果无法解析则返回None
+        Unix时间戳（秒），如果无法解析则返回None。
 
+    Priority:
+      1) quotaResetTimeStamp (absolute time)
+      2) quotaResetDelay (relative duration)
+    
     示例错误响应:
     {
       "error": {
@@ -518,6 +588,12 @@ def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
                         reset_dt = reset_dt.replace(tzinfo=timezone.utc)
 
                     return reset_dt.astimezone(timezone.utc).timestamp()
+
+                delay_str = detail.get("metadata", {}).get("quotaResetDelay")
+                if delay_str:
+                    sec = _parse_duration_string_seconds(str(delay_str))
+                    if sec:
+                        return time.time() + sec
 
         return None
 

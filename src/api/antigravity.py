@@ -7,6 +7,7 @@ import asyncio
 import json
 import time
 import uuid
+import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,9 @@ from config import (
     get_entitlement_403_model_cooldown_seconds,
     get_long_quota_cooldown_rotate_threshold_seconds,
     get_retry_rotate_delay_ms,
+    get_pool_wait_enabled,
+    get_pool_wait_max_seconds,
+    get_pool_wait_poll_seconds,
 )
 from log import log
 
@@ -39,7 +43,27 @@ from src.api.utils import (
     is_project_license_403_error,
 )
 
+from src.api.quota_refresh import fetch_realtime_quota_reset_timestamp
+
 from src.google_oauth_api import Credentials, fetch_project_id
+
+
+def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
+    status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
+    headers_out: Dict[str, str] = {}
+    earliest = snapshot.get("earliest_model_cooldown_until")
+    if status == 429 and earliest:
+        try:
+            wait_s = max(1, int(math.ceil(float(earliest) - time.time())))
+            headers_out["Retry-After"] = str(wait_s)
+        except Exception:
+            pass
+    return Response(
+        content=json.dumps({"error": "当前无可用凭证", "details": snapshot}),
+        status_code=status,
+        headers=headers_out or None,
+        media_type="application/json",
+    )
 
 # 导入重试策略模块
 from src.api.retry_strategy import (
@@ -118,17 +142,24 @@ async def stream_request(
         mode="antigravity", model_key=model_name
     )
 
+    if not cred_result and await get_pool_wait_enabled():
+        try:
+            cred_result = await credential_manager.wait_for_valid_credential(
+                mode="antigravity",
+                model_key=model_name,
+                exclude_filenames=None,
+                max_wait_seconds=await get_pool_wait_max_seconds(),
+                poll_seconds=await get_pool_wait_poll_seconds(),
+            )
+        except Exception as e:
+            log.warning(f"[ANTIGRAVITY STREAM] Pool wait failed: {e}")
+
     if not cred_result:
         snapshot = await credential_manager.get_model_availability_snapshot(
             mode="antigravity", model_key=model_name, exclude_filenames=None
         )
         log.error(f"[ANTIGRAVITY STREAM] 当前无可用凭证: {snapshot}")
-        status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
-        yield Response(
-            content=json.dumps({"error": "当前无可用凭证", "details": snapshot}),
-            status_code=status,
-            media_type="application/json",
-        )
+        yield _build_no_credentials_response(snapshot)
         return
 
     current_file, credential_data = cred_result
@@ -194,6 +225,7 @@ async def stream_request(
     for attempt in range(max_retries + 1):
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
+        last_status_code_for_retry: Optional[int] = None
 
         try:
             async for chunk in stream_post_async(
@@ -205,6 +237,7 @@ async def stream_request(
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
                     status_code = chunk.status_code
+                    last_status_code_for_retry = status_code
                     last_error_response = chunk  # 记录最后一次错误
 
                     # 缓存错误解析结果,避免重复decode
@@ -216,6 +249,12 @@ async def stream_request(
 
                     # 使用新的重试策略判断是否应该重试
                     strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_body or "")
+
+                    retry_after_header = None
+                    try:
+                        retry_after_header = chunk.headers.get("Retry-After") if getattr(chunk, "headers", None) else None
+                    except Exception:
+                        retry_after_header = None
 
                     # Special handling: entitlement/project permission errors should not spam the pool.
                     extra_cooldown_until = None
@@ -271,7 +310,9 @@ async def stream_request(
                     parsed_until: Optional[float] = None
                     if status_code == 429 and error_body:
                         try:
-                            parsed_until = await parse_and_log_cooldown(error_body, mode="antigravity")
+                            parsed_until = await parse_and_log_cooldown(
+                                error_body, mode="antigravity", retry_after_header=retry_after_header
+                            )
                         except Exception:
                             parsed_until = None
                         if parsed_until is not None:
@@ -321,9 +362,37 @@ async def stream_request(
                         cooldown_until = extra_cooldown_until
                         if cooldown_until is None and status_code == 429 and error_body:
                             try:
-                                cooldown_until = await parse_and_log_cooldown(error_body, mode="antigravity")
+                                cooldown_until = await parse_and_log_cooldown(
+                                    error_body, mode="antigravity", retry_after_header=retry_after_header
+                                )
                             except Exception:
                                 pass
+
+                        # Realtime quota refresh fallback (Antigravity-Manager style)
+                        if cooldown_until is None and status_code == 429:
+                            try:
+                                from config import (
+                                    get_realtime_quota_refresh_enabled,
+                                    get_realtime_quota_refresh_timeout_seconds,
+                                    get_realtime_quota_refresh_cache_ttl_seconds,
+                                    get_realtime_quota_refresh_fallback_to_earliest_reset,
+                                )
+
+                                if await get_realtime_quota_refresh_enabled():
+                                    api_base_url = await get_antigravity_api_url()
+                                    cooldown_until = await fetch_realtime_quota_reset_timestamp(
+                                        api_base_url=api_base_url,
+                                        headers=auth_headers,
+                                        model_name=str(model_name),
+                                        cache_key=str(current_file),
+                                        cache_ttl_seconds=int(await get_realtime_quota_refresh_cache_ttl_seconds()),
+                                        timeout_seconds=float(await get_realtime_quota_refresh_timeout_seconds()),
+                                        fallback_to_earliest=bool(
+                                            await get_realtime_quota_refresh_fallback_to_earliest_reset()
+                                        ),
+                                    )
+                            except Exception as e:
+                                log.debug(f"[ANTIGRAVITY STREAM] Realtime quota refresh failed: {e}")
 
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
@@ -381,6 +450,7 @@ async def stream_request(
             elif not need_retry:
                 # 没有收到任何数据（空回复），需要重试
                 log.warning(f"[ANTIGRAVITY STREAM] 收到空回复，无任何内容，凭证: {current_file}")
+                last_status_code_for_retry = 200
                 await record_api_call_error(
                     credential_manager, current_file, 200,
                     None, mode="antigravity", model_key=model_name
@@ -400,6 +470,18 @@ async def stream_request(
             # 统一处理重试
             if need_retry:
                 log.info(f"[ANTIGRAVITY STREAM] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
+
+                # For transient server-side errors (e.g. 503 capacity), do NOT rotate
+                # credentials. Retrying with a different account doesn't help and can
+                # lead to "no available credentials" due to exclude_filenames.
+                if (
+                    last_status_code_for_retry is not None
+                    and not should_rotate_account(int(last_status_code_for_retry))
+                ):
+                    log.info(
+                        f"[ANTIGRAVITY STREAM] Keeping same credential for status={last_status_code_for_retry}"
+                    )
+                    continue
 
                 # 使用预热的凭证任务,避免等待
                 if next_cred_task is not None:
@@ -424,11 +506,32 @@ async def stream_request(
 
                 if not await refresh_credential_fast():
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
-                    yield Response(
-                        content=json.dumps({"error": "当前无可用凭证"}),
-                        status_code=500,
-                        media_type="application/json"
+                    # As a last resort, wait briefly for the pool to recover.
+                    if await get_pool_wait_enabled():
+                        try:
+                            waited = await credential_manager.wait_for_valid_credential(
+                                mode="antigravity",
+                                model_key=model_name,
+                                exclude_filenames=None,
+                                max_wait_seconds=await get_pool_wait_max_seconds(),
+                                poll_seconds=await get_pool_wait_poll_seconds(),
+                            )
+                            if waited:
+                                current_file, credential_data = waited
+                                tried_files.add(str(current_file))
+                                access_token = credential_data.get("access_token") or credential_data.get("token")
+                                project_id = credential_data.get("project_id", "")
+                                if access_token and project_id:
+                                    auth_headers["Authorization"] = f"Bearer {access_token}"
+                                    final_payload["project"] = project_id
+                                    continue
+                        except Exception as e:
+                            log.warning(f"[ANTIGRAVITY STREAM] Pool wait during retry failed: {e}")
+
+                    snapshot = await credential_manager.get_model_availability_snapshot(
+                        mode="antigravity", model_key=model_name, exclude_filenames=None
                     )
+                    yield _build_no_credentials_response(snapshot)
                     return
                 continue  # 重试
 
@@ -485,17 +588,24 @@ async def non_stream_request(
         mode="antigravity", model_key=model_name
     )
 
+    if not cred_result and await get_pool_wait_enabled():
+        try:
+            cred_result = await credential_manager.wait_for_valid_credential(
+                mode="antigravity",
+                model_key=model_name,
+                exclude_filenames=None,
+                max_wait_seconds=await get_pool_wait_max_seconds(),
+                poll_seconds=await get_pool_wait_poll_seconds(),
+            )
+        except Exception as e:
+            log.warning(f"[ANTIGRAVITY] Pool wait failed: {e}")
+
     if not cred_result:
         snapshot = await credential_manager.get_model_availability_snapshot(
             mode="antigravity", model_key=model_name, exclude_filenames=None
         )
         log.error(f"[ANTIGRAVITY] 当前无可用凭证: {snapshot}")
-        status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
-        return Response(
-            content=json.dumps({"error": "当前无可用凭证", "details": snapshot}),
-            status_code=status,
-            media_type="application/json",
-        )
+        return _build_no_credentials_response(snapshot)
 
     current_file, credential_data = cred_result
     tried_files.add(str(current_file))
@@ -617,6 +727,12 @@ async def non_stream_request(
                 except Exception:
                     pass
 
+                retry_after_header = None
+                try:
+                    retry_after_header = response.headers.get("Retry-After")
+                except Exception:
+                    retry_after_header = None
+
                 # 使用新的重试策略判断是否应该重试
                 strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_text or "")
 
@@ -675,7 +791,9 @@ async def non_stream_request(
                 parsed_until: Optional[float] = None
                 if status_code == 429 and error_text:
                     try:
-                        parsed_until = await parse_and_log_cooldown(error_text, mode="antigravity")
+                        parsed_until = await parse_and_log_cooldown(
+                            error_text, mode="antigravity", retry_after_header=retry_after_header
+                        )
                     except Exception:
                         parsed_until = None
                     if parsed_until is not None:
@@ -731,9 +849,37 @@ async def non_stream_request(
                     cooldown_until = extra_cooldown_until
                     if cooldown_until is None and status_code == 429 and error_text:
                         try:
-                            cooldown_until = await parse_and_log_cooldown(error_text, mode="antigravity")
+                            cooldown_until = await parse_and_log_cooldown(
+                                error_text, mode="antigravity", retry_after_header=retry_after_header
+                            )
                         except Exception:
                             pass
+
+                    # Realtime quota refresh fallback (Antigravity-Manager style)
+                    if cooldown_until is None and status_code == 429:
+                        try:
+                            from config import (
+                                get_realtime_quota_refresh_enabled,
+                                get_realtime_quota_refresh_timeout_seconds,
+                                get_realtime_quota_refresh_cache_ttl_seconds,
+                                get_realtime_quota_refresh_fallback_to_earliest_reset,
+                            )
+
+                            if await get_realtime_quota_refresh_enabled():
+                                api_base_url = await get_antigravity_api_url()
+                                cooldown_until = await fetch_realtime_quota_reset_timestamp(
+                                    api_base_url=api_base_url,
+                                    headers=auth_headers,
+                                    model_name=str(model_name),
+                                    cache_key=str(current_file),
+                                    cache_ttl_seconds=int(await get_realtime_quota_refresh_cache_ttl_seconds()),
+                                    timeout_seconds=float(await get_realtime_quota_refresh_timeout_seconds()),
+                                    fallback_to_earliest=bool(
+                                        await get_realtime_quota_refresh_fallback_to_earliest_reset()
+                                    ),
+                                )
+                        except Exception as e:
+                            log.debug(f"[ANTIGRAVITY] Realtime quota refresh failed: {e}")
 
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
@@ -768,6 +914,10 @@ async def non_stream_request(
             if need_retry:
                 log.info(f"[ANTIGRAVITY] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
 
+                if not should_rotate_account(int(status_code)):
+                    log.info(f"[ANTIGRAVITY] Keeping same credential for status={status_code}")
+                    continue
+
                 # 使用预热的凭证任务,避免等待
                 if next_cred_task is not None:
                     try:
@@ -791,11 +941,31 @@ async def non_stream_request(
 
                 if not await refresh_credential_fast():
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
-                    return Response(
-                        content=json.dumps({"error": "当前无可用凭证"}),
-                        status_code=500,
-                        media_type="application/json"
+                    if await get_pool_wait_enabled():
+                        try:
+                            waited = await credential_manager.wait_for_valid_credential(
+                                mode="antigravity",
+                                model_key=model_name,
+                                exclude_filenames=None,
+                                max_wait_seconds=await get_pool_wait_max_seconds(),
+                                poll_seconds=await get_pool_wait_poll_seconds(),
+                            )
+                            if waited:
+                                current_file, credential_data = waited
+                                tried_files.add(str(current_file))
+                                access_token = credential_data.get("access_token") or credential_data.get("token")
+                                project_id = credential_data.get("project_id", "")
+                                if access_token and project_id:
+                                    auth_headers["Authorization"] = f"Bearer {access_token}"
+                                    final_payload["project"] = project_id
+                                    continue
+                        except Exception as e:
+                            log.warning(f"[ANTIGRAVITY] Pool wait during retry failed: {e}")
+
+                    snapshot = await credential_manager.get_model_availability_snapshot(
+                        mode="antigravity", model_key=model_name, exclude_filenames=None
                     )
+                    return _build_no_credentials_response(snapshot)
                 continue  # 重试
 
         except Exception as e:

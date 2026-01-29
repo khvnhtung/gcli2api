@@ -15,10 +15,18 @@ if __name__ == "__main__":
 
 import asyncio
 import json
+import math
+import time
 from typing import Any, Dict, Optional
 
 from fastapi import Response
-from config import get_code_assist_endpoint, get_auto_ban_error_codes
+from config import (
+    get_code_assist_endpoint,
+    get_auto_ban_error_codes,
+    get_pool_wait_enabled,
+    get_pool_wait_max_seconds,
+    get_pool_wait_poll_seconds,
+)
 from src.api.utils import get_model_group
 from log import log
 
@@ -34,6 +42,24 @@ from src.api.utils import (
     parse_and_log_cooldown,
 )
 from src.utils import GEMINICLI_USER_AGENT
+
+
+def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
+    status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
+    headers_out: Dict[str, str] = {}
+    earliest = snapshot.get("earliest_model_cooldown_until")
+    if status == 429 and earliest:
+        try:
+            wait_s = max(1, int(math.ceil(float(earliest) - time.time())))
+            headers_out["Retry-After"] = str(wait_s)
+        except Exception:
+            pass
+    return Response(
+        content=json.dumps({"error": "当前无可用凭证", "details": snapshot}),
+        status_code=status,
+        headers=headers_out or None,
+        media_type="application/json",
+    )
 
 # ==================== 全局凭证管理器 ====================
 
@@ -110,13 +136,23 @@ async def stream_request(
         mode="geminicli", model_key=model_group
     )
 
+    if not cred_result and await get_pool_wait_enabled():
+        try:
+            cred_result = await credential_manager.wait_for_valid_credential(
+                mode="geminicli",
+                model_key=model_group,
+                exclude_filenames=None,
+                max_wait_seconds=await get_pool_wait_max_seconds(),
+                poll_seconds=await get_pool_wait_poll_seconds(),
+            )
+        except Exception as e:
+            log.warning(f"[GEMINICLI STREAM] Pool wait failed: {e}")
+
     if not cred_result:
-        # 如果返回值是None，直接返回错误500
-        yield Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=500,
-            media_type="application/json"
+        snapshot = await credential_manager.get_model_availability_snapshot(
+            mode="geminicli", model_key=model_group, exclude_filenames=None
         )
+        yield _build_no_credentials_response(snapshot)
         return
 
     current_file, credential_data = cred_result
@@ -196,6 +232,12 @@ async def stream_request(
                     except Exception:
                         error_body = ""
 
+                    retry_after_header = None
+                    try:
+                        retry_after_header = chunk.headers.get("Retry-After") if getattr(chunk, "headers", None) else None
+                    except Exception:
+                        retry_after_header = None
+
                     # 如果错误码是429或者在禁用码当中，做好记录后进行重试
                     if status_code == 429 or status_code in DISABLE_ERROR_CODES:
                         log.warning(f"[GEMINICLI STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
@@ -213,7 +255,9 @@ async def stream_request(
                         if status_code == 429 and error_body:
                             # 使用已缓存的error_body解析冷却时间
                             try:
-                                cooldown_until = await parse_and_log_cooldown(error_body, mode="geminicli")
+                                cooldown_until = await parse_and_log_cooldown(
+                                    error_body, mode="geminicli", retry_after_header=retry_after_header
+                                )
                             except Exception:
                                 pass
 
@@ -292,11 +336,31 @@ async def stream_request(
 
                 if not await refresh_credential_fast():
                     log.error("[GEMINICLI STREAM] 重试时无可用凭证或刷新失败")
-                    yield Response(
-                        content=json.dumps({"error": "当前无可用凭证"}),
-                        status_code=500,
-                        media_type="application/json"
+                    if await get_pool_wait_enabled():
+                        try:
+                            waited = await credential_manager.wait_for_valid_credential(
+                                mode="geminicli",
+                                model_key=model_group,
+                                exclude_filenames=None,
+                                max_wait_seconds=await get_pool_wait_max_seconds(),
+                                poll_seconds=await get_pool_wait_poll_seconds(),
+                            )
+                            if waited:
+                                current_file, credential_data = waited
+                                token = credential_data.get("token") or credential_data.get("access_token", "")
+                                project_id = credential_data.get("project_id", "")
+                                if token and project_id:
+                                    auth_headers["Authorization"] = f"Bearer {token}"
+                                    final_payload["project"] = project_id
+                                    await asyncio.sleep(retry_interval)
+                                    continue
+                        except Exception as e:
+                            log.warning(f"[GEMINICLI STREAM] Pool wait during retry failed: {e}")
+
+                    snapshot = await credential_manager.get_model_availability_snapshot(
+                        mode="geminicli", model_key=model_group, exclude_filenames=None
                     )
+                    yield _build_no_credentials_response(snapshot)
                     return
                 continue  # 重试
 
@@ -444,6 +508,12 @@ async def non_stream_request(
             except Exception:
                 pass
 
+            retry_after_header = None
+            try:
+                retry_after_header = response.headers.get("Retry-After")
+            except Exception:
+                retry_after_header = None
+
             # 如果错误码在禁用码当中，禁用该凭证
             if status_code in DISABLE_ERROR_CODES:
                 log.error(f"非流式请求失败，禁用错误码 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
@@ -517,7 +587,9 @@ async def non_stream_request(
                 if status_code == 429 and error_text:
                     # 使用已缓存的error_text解析冷却时间
                     try:
-                        cooldown_until = await parse_and_log_cooldown(error_text, mode="geminicli")
+                        cooldown_until = await parse_and_log_cooldown(
+                            error_text, mode="geminicli", retry_after_header=retry_after_header
+                        )
                     except Exception:
                         pass
 

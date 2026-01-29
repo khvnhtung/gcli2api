@@ -14,6 +14,9 @@ if str(project_root) not in sys.path:
 # 标准库
 import asyncio
 import json
+from typing import Any
+import math
+import time
 
 # 第三方库
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,6 +28,7 @@ from log import log
 
 # 本地模块 - 工具和认证
 from src.utils import (
+    apply_model_alias,
     get_base_model_from_feature_model,
     is_anti_truncation_model,
     is_fake_streaming_model,
@@ -49,6 +53,19 @@ from src.task_manager import create_managed_task
 
 # 本地模块 - Token估算
 from src.token_estimator import estimate_input_tokens
+
+from src.context_compression import maybe_apply_checkpoint_to_gemini_request
+from src.converter.tool_result_compressor import compact_tool_result
+from src.credential_manager import credential_manager
+
+
+def _response_body_to_text(resp: Any) -> str:
+    body = getattr(resp, "body", b"")
+    if isinstance(body, memoryview):
+        body = body.tobytes()
+    if isinstance(body, (bytes, bytearray)):
+        return body.decode("utf-8", errors="ignore")
+    return str(body)
 
 
 # ==================== 路由器初始化 ====================
@@ -85,8 +102,51 @@ async def messages(
     use_anti_truncation = is_anti_truncation_model(claude_request.model)
     real_model = get_base_model_from_feature_model(claude_request.model)
 
+    # Apply model alias mapping (e.g., gemini-3-pro → gemini-3-pro-high)
+    real_model = apply_model_alias(real_model)
+
     # 获取流式标志
     is_streaming = claude_request.stream
+
+    # If the client requested streaming and the pool is temporarily exhausted,
+    # return a 429 with Retry-After so OpenCode can show a countdown and retry
+    # instead of receiving a truncated stream.
+    if is_streaming:
+        try:
+            from config import get_pool_wait_enabled
+
+            snapshot = await credential_manager.get_model_availability_snapshot(
+                mode="antigravity", model_key=real_model, exclude_filenames=None
+            )
+            if snapshot.get("enabled") and snapshot.get("available") == 0:
+                # If server-side waiting is enabled, don't fail early; the downstream
+                # antigravity API layer will wait for pool recovery.
+                if await get_pool_wait_enabled():
+                    log.info("[ANTIGRAVITY-ANTHROPIC] Pool exhausted; wait enabled, continuing")
+                else:
+                    headers_out: dict[str, str] = {}
+                    earliest = snapshot.get("earliest_model_cooldown_until")
+                    if earliest:
+                        try:
+                            wait_s = max(1, int(math.ceil(float(earliest) - time.time())))
+                            headers_out["Retry-After"] = str(wait_s)
+                        except Exception:
+                            pass
+
+                    return JSONResponse(
+                        status_code=429,
+                        headers=headers_out or None,
+                        content={
+                            "type": "error",
+                            "error": {
+                                "type": "rate_limit_error",
+                                "message": "当前无可用凭证 (pool exhausted). Please retry after cooldown.",
+                            },
+                            "details": snapshot,
+                        },
+                    )
+        except Exception as e:
+            log.warning(f"[ANTIGRAVITY-ANTHROPIC] no-credentials preflight failed: {e}")
 
     # 对于抗截断模型的非流式请求，给出警告
     if use_anti_truncation and not is_streaming:
@@ -106,11 +166,84 @@ async def messages(
     from src.converter.gemini_fix import normalize_gemini_request
     gemini_dict = await normalize_gemini_request(gemini_dict, mode="antigravity")
 
+    # ========== Tool result compression (config-driven) ==========
+    try:
+        from config import get_tool_result_compression_enabled, get_tool_result_max_chars
+
+        if await get_tool_result_compression_enabled():
+            max_chars = int(await get_tool_result_max_chars())
+            contents = gemini_dict.get("contents")
+            if isinstance(contents, list) and max_chars > 0:
+                for content in contents:
+                    if not isinstance(content, dict):
+                        continue
+                    parts = content.get("parts")
+                    if not isinstance(parts, list):
+                        continue
+                    for part in parts:
+                        if not isinstance(part, dict):
+                            continue
+                        fr = part.get("functionResponse")
+                        if not isinstance(fr, dict):
+                            continue
+                        resp = fr.get("response")
+                        if not isinstance(resp, dict):
+                            continue
+                        out = resp.get("output")
+                        if isinstance(out, str) and len(out) > max_chars:
+                            resp["output"] = compact_tool_result(out, max_chars=max_chars)
+    except Exception as e:
+        log.warning(f"[ToolCompressor] Failed to apply tool_result compression: {e}")
+
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
+
+    # ========== Context Checkpoint Compression (Anthropic -> Antigravity) ==========
+    checkpoint_applied = False
+    try:
+        from config import (
+            get_context_compression_enabled,
+            get_context_compression_trigger_input_tokens,
+            get_context_compression_keep_last_messages,
+            get_context_compression_summary_model,
+            get_context_compression_summary_max_output_tokens,
+            get_tool_result_max_chars,
+        )
+
+        enabled = await get_context_compression_enabled()
+        if enabled:
+            est_tokens = 0
+            try:
+                est_tokens = estimate_input_tokens(api_request)
+            except Exception:
+                est_tokens = 0
+
+            trigger_tokens = await get_context_compression_trigger_input_tokens()
+            keep_last = await get_context_compression_keep_last_messages()
+            summary_model = await get_context_compression_summary_model()
+            summary_max_out = await get_context_compression_summary_max_output_tokens()
+
+            tool_result_max_chars = int(await get_tool_result_max_chars())
+            tool_result_max_chars_for_summary = min(tool_result_max_chars, 20000)
+
+            new_req, checkpoint_applied = await maybe_apply_checkpoint_to_gemini_request(
+                gemini_request=api_request["request"],
+                anthropic_request=normalized_dict,
+                estimated_input_tokens=int(est_tokens),
+                enabled=True,
+                trigger_input_tokens=int(trigger_tokens),
+                keep_last_messages=int(keep_last),
+                summary_model=str(summary_model),
+                summary_max_output_tokens=int(summary_max_out),
+                tool_result_max_chars_for_summary=int(tool_result_max_chars_for_summary),
+            )
+            if checkpoint_applied:
+                api_request["request"] = new_req
+    except Exception as e:
+        log.warning(f"[CTX-COMPRESS] Preflight checkpoint failed: {e}")
 
     # ========== 非流式请求 ==========
     if not is_streaming:
@@ -121,19 +254,66 @@ async def messages(
         # 检查响应状态码
         status_code = getattr(response, "status_code", 200)
 
-        # 提取响应体
-        if hasattr(response, "body"):
-            response_body = response.body.decode() if isinstance(response.body, bytes) else response.body
-        elif hasattr(response, "content"):
-            response_body = response.content.decode() if isinstance(response.content, bytes) else response.content
-        else:
-            response_body = str(response)
+        response_body = _response_body_to_text(response)
 
         try:
             gemini_response = json.loads(response_body)
         except Exception as e:
             log.error(f"Failed to parse Gemini response: {e}")
             raise HTTPException(status_code=500, detail="Response parsing failed")
+
+        # If prompt is still too long, optionally retry once with forced checkpoint.
+        try:
+            from config import get_context_compression_force_on_prompt_too_long
+            force_retry = await get_context_compression_force_on_prompt_too_long()
+        except Exception:
+            force_retry = False
+
+        if force_retry and (not checkpoint_applied) and status_code in (400, 413):
+            try:
+                # Try to detect "prompt too long" from error body.
+                error_text = response_body if isinstance(response_body, str) else str(response_body)
+                error_l = error_text.lower()
+                if ("too long" in error_l) or ("exceeds" in error_l):
+                    from config import (
+                        get_context_compression_enabled,
+                        get_context_compression_keep_last_messages,
+                        get_context_compression_summary_model,
+                        get_context_compression_summary_max_output_tokens,
+                        get_context_compression_trigger_input_tokens,
+                        get_tool_result_max_chars,
+                    )
+
+                    if await get_context_compression_enabled():
+                        trigger_tokens = await get_context_compression_trigger_input_tokens()
+                        tool_result_max_chars = int(await get_tool_result_max_chars())
+                        tool_result_max_chars_for_summary = min(tool_result_max_chars, 20000)
+
+                        new_req, applied = await maybe_apply_checkpoint_to_gemini_request(
+                            gemini_request=api_request["request"],
+                            anthropic_request=normalized_dict,
+                            estimated_input_tokens=int(trigger_tokens) + 1,
+                            enabled=True,
+                            trigger_input_tokens=int(trigger_tokens),
+                            keep_last_messages=int(await get_context_compression_keep_last_messages()),
+                            summary_model=str(await get_context_compression_summary_model()),
+                            summary_max_output_tokens=int(await get_context_compression_summary_max_output_tokens()),
+                            tool_result_max_chars_for_summary=int(tool_result_max_chars_for_summary),
+                        )
+                        if applied:
+                            api_request["request"] = new_req
+                            checkpoint_applied = True
+                            response = await non_stream_request(body=api_request)
+                            status_code = getattr(response, "status_code", 200)
+                            response_body = _response_body_to_text(response)
+
+                            try:
+                                gemini_response = json.loads(response_body)
+                            except Exception as e:
+                                log.error(f"Failed to parse Gemini response after checkpoint retry: {e}")
+                                raise HTTPException(status_code=500, detail="Response parsing failed")
+            except Exception as e:
+                log.warning(f"[CTX-COMPRESS] Forced checkpoint retry failed: {e}")
 
         # 转换为 Anthropic 格式
         from src.converter.anthropic2gemini import gemini_to_anthropic_response
@@ -193,12 +373,7 @@ async def messages(
             # 错误响应 - 提取错误信息并以SSE格式返回
             log.error(f"Fake streaming got error response: status={response.status_code}")
 
-            if hasattr(response, "body"):
-                error_body = response.body.decode() if isinstance(response.body, bytes) else response.body
-            elif hasattr(response, "content"):
-                error_body = response.content.decode() if isinstance(response.content, bytes) else response.content
-            else:
-                error_body = str(response)
+            error_body = _response_body_to_text(response)
 
             try:
                 error_data = json.loads(error_body)
@@ -218,12 +393,7 @@ async def messages(
             return
 
         # 处理成功响应 - 提取响应内容
-        if hasattr(response, "body"):
-            response_body = response.body.decode() if isinstance(response.body, bytes) else response.body
-        elif hasattr(response, "content"):
-            response_body = response.content.decode() if isinstance(response.content, bytes) else response.content
-        else:
-            response_body = str(response)
+        response_body = _response_body_to_text(response)
 
         try:
             gemini_response = json.loads(response_body)
@@ -319,6 +489,47 @@ async def messages(
         from fastapi import Response
         from src.converter.anthropic2gemini import gemini_stream_to_anthropic_stream
 
+        # If the pool is exhausted, optionally keep the client connection alive
+        # with Anthropic ping events while waiting for recovery.
+        try:
+            from config import (
+                get_pool_wait_enabled,
+                get_pool_wait_max_seconds,
+                get_pool_wait_poll_seconds,
+            )
+
+            if await get_pool_wait_enabled():
+                max_wait = float(await get_pool_wait_max_seconds())
+                poll = float(await get_pool_wait_poll_seconds())
+                if max_wait > 0:
+                    deadline = time.time() + max_wait
+                    while time.time() < deadline:
+                        snap = await credential_manager.get_model_availability_snapshot(
+                            mode="antigravity", model_key=real_model, exclude_filenames=None
+                        )
+                        if not (snap.get("enabled") and snap.get("available") == 0):
+                            break
+
+                        # Emit ping to keep OpenCode from timing out.
+                        ping = {"type": "ping"}
+                        yield (
+                            "event: ping\n"
+                            f"data: {json.dumps(ping, ensure_ascii=False)}\n\n"
+                        ).encode("utf-8")
+
+                        earliest = snap.get("earliest_model_cooldown_until")
+                        sleep_s = min(poll if poll > 0 else 1.0, max(0.2, deadline - time.time()))
+                        try:
+                            if earliest:
+                                until = float(earliest) - time.time()
+                                if until > 0:
+                                    sleep_s = min(sleep_s, max(0.2, until))
+                        except Exception:
+                            pass
+                        await asyncio.sleep(sleep_s)
+        except Exception as e:
+            log.debug(f"[ANTIGRAVITY-ANTHROPIC] Ping-wait loop failed: {e}")
+
         # 调用 API 层的流式请求（不使用 native 模式）
         stream_gen = stream_request(body=api_request, native=False)
 
@@ -328,7 +539,13 @@ async def messages(
                 # 检查是否是Response对象（错误情况）
                 if isinstance(chunk, Response):
                     # 错误响应，转换为 Anthropic 格式
-                    error_content = chunk.body if isinstance(chunk.body, bytes) else chunk.body.encode('utf-8')
+                    raw_body = getattr(chunk, "body", b"")
+                    if isinstance(raw_body, memoryview):
+                        raw_body = raw_body.tobytes()
+                    if isinstance(raw_body, bytes):
+                        error_content = raw_body
+                    else:
+                        error_content = str(raw_body).encode("utf-8")
                     try:
                         gemini_error = json.loads(error_content.decode('utf-8'))
 
@@ -361,6 +578,20 @@ async def messages(
                                 error_message = err
                             elif err is not None:
                                 error_message = str(err)
+
+                            # Attach details snapshot if present (helps explain "no available credentials").
+                            details = gemini_error.get("details")
+                            if isinstance(details, dict):
+                                enabled = details.get("enabled")
+                                available = details.get("available")
+                                earliest = details.get("earliest_model_cooldown_until")
+                                if enabled is not None or available is not None or earliest is not None:
+                                    extra = {
+                                        "enabled": enabled,
+                                        "available": available,
+                                        "earliest_model_cooldown_until": earliest,
+                                    }
+                                    error_message = f"{error_message} | details={json.dumps(extra, ensure_ascii=False)}"
                         elif isinstance(gemini_error, dict) and "message" in gemini_error:
                             error_message = str(gemini_error.get("message") or "Unknown error")
                         else:
@@ -383,11 +614,12 @@ async def messages(
                                 "message": error_message
                             }
                         }
-                        
-                        yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
+
+                        # Yield as a Gemini-style SSE data line; converter will emit proper Anthropic SSE event.
+                        yield f"data: {json.dumps(anthropic_error, ensure_ascii=False)}\n\n".encode('utf-8')
                     except Exception as e:
                         log.error(f"Error parsing error response: {e}")
-                        yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
+                        yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}}, ensure_ascii=False)}\n\n".encode('utf-8')
                     return
                 else:
                     # 确保是bytes类型
