@@ -18,6 +18,7 @@ from src.converter.thoughtSignature_fix import (
     encode_tool_id_with_signature,
     decode_tool_id_and_signature
 )
+from src.converter.tool_result_compressor import compact_tool_result
 
 DEFAULT_TEMPERATURE = 0.4
 _DEBUG_TRUE = {"1", "true", "yes", "on"}
@@ -738,18 +739,34 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
 # 5. Messages 转换
 # ============================================================================
 
-def _extract_tool_result_output(content: Any) -> str:
-    """从 tool_result.content 中提取输出字符串"""
+def _extract_tool_result_output(content: Any, max_chars: Optional[int] = None) -> str:
+    """
+    从 tool_result.content 中提取输出字符串，并应用压缩。
+    
+    Args:
+        content: tool_result 的 content 字段
+        max_chars: 最大字符数限制（None 使用默认值 200K）
+    
+    Returns:
+        压缩后的输出字符串
+    """
+    # Extract raw output
+    raw_output: str
     if isinstance(content, list):
         if not content:
             return ""
         first = content[0]
         if isinstance(first, dict) and first.get("type") == "text":
-            return str(first.get("text", ""))
-        return str(first)
-    if content is None:
+            raw_output = str(first.get("text", ""))
+        else:
+            raw_output = str(first)
+    elif content is None:
         return ""
-    return str(content)
+    else:
+        raw_output = str(content)
+    
+    # Apply compression
+    return compact_tool_result(raw_output, max_chars)
 
 
 def convert_messages_to_contents(
@@ -1377,6 +1394,15 @@ async def gemini_stream_to_anthropic_stream(
             except Exception as e:
                 log.warning(f"[GEMINI_TO_ANTHROPIC] JSON parse error: {e}")
                 continue
+
+            # Check if this is an Anthropic error event (from gemini_chunk_wrapper)
+            # Format: {"type": "error", "error": {"type": "...", "message": "..."}}
+            if data.get("type") == "error" and "error" in data:
+                log.warning(f"[GEMINI_TO_ANTHROPIC] Received error event, passing through: {data}")
+                # Pass through the error event as-is
+                yield chunk
+                # Don't emit message_stop after error
+                return
 
             # 处理 GeminiCLI 的 response 包装格式
             if "response" in data:

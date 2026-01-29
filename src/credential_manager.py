@@ -46,7 +46,10 @@ class CredentialManager:
         log.debug("Credential manager closed")
 
     async def get_valid_credential(
-        self, mode: str = "geminicli", model_key: Optional[str] = None
+        self,
+        mode: str = "geminicli",
+        model_key: Optional[str] = None,
+        exclude_filenames: Optional[List[str]] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
         获取有效的凭证 - 随机负载均衡版
@@ -65,7 +68,7 @@ class CredentialManager:
         max_retries = 3
         for attempt in range(max_retries):
             result = await self._storage_adapter._backend.get_next_available_credential(
-                mode=mode, model_key=model_key
+                mode=mode, model_key=model_key, exclude_filenames=exclude_filenames
             )
 
             # 如果没有可用凭证，直接返回None
@@ -97,6 +100,37 @@ class CredentialManager:
         # 重试次数用尽
         log.error(f"重试{max_retries}次后仍无可用凭证 (mode={mode}, model_key={model_key})")
         return None
+
+
+    async def get_model_availability_snapshot(
+        self,
+        mode: str = "geminicli",
+        model_key: Optional[str] = None,
+        exclude_filenames: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return a snapshot of credential availability for troubleshooting."""
+        await self._ensure_initialized()
+
+        backend = getattr(self._storage_adapter, "_backend", None)
+        if backend and hasattr(backend, "get_model_availability_snapshot"):
+            try:
+                return await backend.get_model_availability_snapshot(
+                    mode=mode,
+                    model_key=model_key,
+                    exclude_filenames=exclude_filenames,
+                )
+            except Exception as e:
+                return {
+                    "mode": mode,
+                    "model_key": model_key,
+                    "error": str(e),
+                }
+
+        return {
+            "mode": mode,
+            "model_key": model_key,
+            "error": "backend does not support get_model_availability_snapshot",
+        }
 
     async def add_credential(self, credential_name: str, credential_data: Dict[str, Any]):
         """

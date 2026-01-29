@@ -36,6 +36,11 @@ ENV_MAPPINGS = {
     "RETRY_429_ENABLED": "retry_429_enabled",
     "RETRY_429_INTERVAL": "retry_429_interval",
     "ANTI_TRUNCATION_MAX_ATTEMPTS": "anti_truncation_max_attempts",
+    "TOOL_RESULT_MAX_CHARS": "tool_result_max_chars",
+    "TOOL_RESULT_COMPRESSION_ENABLED": "tool_result_compression_enabled",
+    "ENTITLEMENT_403_MODEL_COOLDOWN_SECONDS": "entitlement_403_model_cooldown_seconds",
+    "LONG_QUOTA_COOLDOWN_ROTATE_THRESHOLD_SECONDS": "long_quota_cooldown_rotate_threshold_seconds",
+    "RETRY_ROTATE_DELAY_MS": "retry_rotate_delay_ms",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
@@ -195,6 +200,99 @@ async def get_anti_truncation_max_attempts() -> int:
             pass
 
     return int(await get_config_value("anti_truncation_max_attempts", 3))
+
+
+async def get_tool_result_max_chars() -> int:
+    """
+    Get maximum characters for tool result compression.
+
+    Environment variable: TOOL_RESULT_MAX_CHARS
+    Database config key: tool_result_max_chars
+    Default: 200000 (200K chars, matching Antigravity Manager)
+    """
+    env_value = os.getenv("TOOL_RESULT_MAX_CHARS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+
+    return int(await get_config_value("tool_result_max_chars", 200000))
+
+
+async def get_tool_result_compression_enabled() -> bool:
+    """
+    Get tool result compression enabled setting.
+
+    Environment variable: TOOL_RESULT_COMPRESSION_ENABLED
+    Database config key: tool_result_compression_enabled
+    Default: True
+    """
+    env_value = os.getenv("TOOL_RESULT_COMPRESSION_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+
+    return bool(await get_config_value("tool_result_compression_enabled", True))
+
+
+async def get_entitlement_403_model_cooldown_seconds() -> int:
+    """
+    Cooldown seconds to apply when a credential is denied by entitlement/licensing.
+
+    This is used for 403 errors like:
+    - SUBSCRIPTION_REQUIRED
+    - "You must be a named user ... Gemini Code Assist"
+    - "Your account is not eligible for Gemini Code Assist"
+
+    Environment variable: ENTITLEMENT_403_MODEL_COOLDOWN_SECONDS
+    Database config key: entitlement_403_model_cooldown_seconds
+    Default: 7 days
+    """
+    env_value = os.getenv("ENTITLEMENT_403_MODEL_COOLDOWN_SECONDS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+
+    return int(await get_config_value("entitlement_403_model_cooldown_seconds", 7 * 24 * 3600))
+
+
+async def get_long_quota_cooldown_rotate_threshold_seconds() -> int:
+    """
+    If a parsed quota reset delay is longer than this threshold, rotate accounts immediately
+    instead of waiting.
+
+    Environment variable: LONG_QUOTA_COOLDOWN_ROTATE_THRESHOLD_SECONDS
+    Database config key: long_quota_cooldown_rotate_threshold_seconds
+    Default: 60 seconds
+    """
+    env_value = os.getenv("LONG_QUOTA_COOLDOWN_ROTATE_THRESHOLD_SECONDS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+
+    return int(await get_config_value("long_quota_cooldown_rotate_threshold_seconds", 60))
+
+
+async def get_retry_rotate_delay_ms() -> int:
+    """
+    Small delay used when rotating accounts aggressively to avoid tight loops.
+
+    Environment variable: RETRY_ROTATE_DELAY_MS
+    Database config key: retry_rotate_delay_ms
+    Default: 200ms
+    """
+    env_value = os.getenv("RETRY_ROTATE_DELAY_MS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+
+    return int(await get_config_value("retry_rotate_delay_ms", 200))
 
 
 # Server Configuration

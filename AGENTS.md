@@ -7,6 +7,28 @@ This document provides guidelines for AI coding agents working on the gcli2api c
 gcli2api converts GeminiCLI and Antigravity to OpenAI, Gemini, and Claude API compatible interfaces.
 It's a Python 3.12+ FastAPI application with async/await patterns throughout.
 
+## Critical: Credentials Mount (Docker)
+
+gcli2api stores its SQLite state at `./creds/credentials.db` inside the container.
+
+- Canonical host path (this repo): `./creds/credentials.db`
+- Container path: `/app/creds/credentials.db`
+
+If you mount an empty directory (or a different directory that has no `credentials.db`), the app will create a fresh empty database and you will see errors like `没有可用凭证` / "no available credentials".
+
+Recommended container run mount:
+
+```bash
+docker run -d --name gcli2api -p 7861:7861 -v ./creds:/app/creds gcli2api:latest
+```
+
+Quick sanity checks:
+
+```bash
+ls -la ./creds/credentials.db
+docker exec gcli2api ls -la /app/creds
+```
+
 ## Build & Run Commands
 
 ```bash
@@ -22,7 +44,7 @@ python web.py          # Direct execution
 make docker-build      # Build Docker image
 make docker-run        # Run container with default settings
 docker build -t gcli2api:latest .
-docker run -d --name gcli2api -p 7861:7861 -v ./data/creds:/app/creds gcli2api:latest
+docker run -d --name gcli2api -p 7861:7861 -v ./creds:/app/creds gcli2api:latest
 ```
 
 ## Testing
@@ -183,5 +205,5 @@ return create_error_response("Not found", status_code=404)
 5. **Docker Deployment**: Always rebuild image after code changes:
    ```bash
    docker build -t gcli2api:latest . && docker stop gcli2api && docker rm gcli2api && \
-   docker run -d --name gcli2api -p 7861:7861 -v ./data/creds:/app/creds gcli2api:latest
+   docker run -d --name gcli2api -p 7861:7861 -v ./creds:/app/creds gcli2api:latest
    ```

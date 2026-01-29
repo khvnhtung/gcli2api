@@ -270,13 +270,16 @@ class SQLiteManager:
     # ============ SQL 方法 ============
 
     async def get_next_available_credential(
-        self, mode: str = "geminicli", model_key: Optional[str] = None
+        self,
+        mode: str = "geminicli",
+        model_key: Optional[str] = None,
+        exclude_filenames: Optional[List[str]] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
-        随机获取一个可用凭证（负载均衡）
+        获取一个可用凭证
         - 未禁用
         - 如果提供了 model_key，还会检查模型级冷却
-        - 随机选择
+        - 优先选择最近成功的凭证（更稳定，减少重复挑到不可用账号）
 
         Args:
             mode: 凭证模式 ("geminicli" 或 "antigravity")
@@ -293,39 +296,140 @@ class SQLiteManager:
             async with aiosqlite.connect(self._db_path) as db:
                 current_time = time.time()
 
-                # 获取所有候选凭证（未禁用）
-                async with db.execute(f"""
-                    SELECT filename, credential_data, model_cooldowns
+                # 获取所有候选凭证（未禁用），可选排除已尝试的凭证（避免重试时反复命中同一账号）
+                where_sql = "WHERE disabled = 0"
+                params: List[Any] = []
+                if exclude_filenames:
+                    placeholders = ",".join(["?"] * len(exclude_filenames))
+                    where_sql += f" AND filename NOT IN ({placeholders})"
+                    params.extend(exclude_filenames)
+
+                async with db.execute(
+                    f"""
+                    SELECT filename, credential_data, model_cooldowns, error_codes, last_success, rotation_order
                     FROM {table_name}
-                    WHERE disabled = 0
-                    ORDER BY RANDOM()
-                """) as cursor:
+                    {where_sql}
+                    """,
+                    tuple(params),
+                ) as cursor:
                     rows = await cursor.fetchall()
 
-                    # 如果没有提供 model_key，使用第一个可用凭证
-                    if not model_key:
-                        if rows:
-                            filename, credential_json, _ = rows[0]
-                            credential_data = json.loads(credential_json)
-                            return filename, credential_data
-                        return None
+                best: Optional[Tuple[float, int, str, Dict[str, Any]]] = None
 
-                    # 如果提供了 model_key，检查模型级冷却
-                    for filename, credential_json, model_cooldowns_json in rows:
-                        model_cooldowns = json.loads(model_cooldowns_json or '{}')
+                for filename, credential_json, model_cooldowns_json, _error_codes_json, last_success, rotation_order in rows:
+                    # 模型级冷却检查
+                    if model_key:
+                        try:
+                            model_cooldowns = json.loads(model_cooldowns_json or "{}")
+                        except Exception:
+                            model_cooldowns = {}
 
-                        # 检查该模型是否在冷却中
-                        model_cooldown = model_cooldowns.get(model_key)
-                        if model_cooldown is None or current_time >= model_cooldown:
-                            # 该模型未冷却或冷却已过期
-                            credential_data = json.loads(credential_json)
-                            return filename, credential_data
+                        until = model_cooldowns.get(model_key)
+                        if until is not None:
+                            try:
+                                if current_time < float(until):
+                                    continue
+                            except Exception:
+                                # 如果解析失败，保守跳过该凭证
+                                continue
 
+                    try:
+                        credential_data = json.loads(credential_json)
+                    except Exception:
+                        continue
+
+                    # Prefer most recent success, then lowest rotation_order
+                    score_ts = float(last_success) if last_success else 0.0
+                    order = int(rotation_order) if rotation_order is not None else 0
+                    if best is None or (score_ts, -order) > (best[0], -best[1]):
+                        best = (score_ts, order, filename, credential_data)
+
+                if best is None:
                     return None
+                return best[2], best[3]
 
         except Exception as e:
             log.error(f"Error getting next available credential (mode={mode}, model_key={model_key}): {e}")
             return None
+
+
+    async def get_model_availability_snapshot(
+        self,
+        mode: str = "geminicli",
+        model_key: Optional[str] = None,
+        exclude_filenames: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return a snapshot of credential availability for troubleshooting."""
+        self._ensure_initialized()
+
+        snapshot: Dict[str, Any] = {
+            "mode": mode,
+            "model_key": model_key,
+            "total": 0,
+            "enabled": 0,
+            "disabled": 0,
+            "cooled": 0,
+            "available": 0,
+            "earliest_model_cooldown_until": None,
+        }
+
+        try:
+            table_name = self._get_table_name(mode)
+            now = time.time()
+            async with aiosqlite.connect(self._db_path) as db:
+                where_sql = ""
+                params: List[Any] = []
+                if exclude_filenames:
+                    placeholders = ",".join(["?"] * len(exclude_filenames))
+                    where_sql = f"WHERE filename NOT IN ({placeholders})"
+                    params.extend(exclude_filenames)
+
+                async with db.execute(
+                    f"""
+                    SELECT filename, disabled, model_cooldowns
+                    FROM {table_name}
+                    {where_sql}
+                    """,
+                    tuple(params),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+
+            snapshot["total"] = len(rows)
+
+            earliest: Optional[float] = None
+            for _filename, disabled, model_cooldowns_json in rows:
+                if disabled:
+                    snapshot["disabled"] += 1
+                    continue
+                snapshot["enabled"] += 1
+
+                if not model_key:
+                    snapshot["available"] += 1
+                    continue
+
+                try:
+                    model_cooldowns = json.loads(model_cooldowns_json or "{}")
+                except Exception:
+                    model_cooldowns = {}
+
+                until = model_cooldowns.get(model_key)
+                if until is None or now >= float(until):
+                    snapshot["available"] += 1
+                else:
+                    snapshot["cooled"] += 1
+                    try:
+                        until_f = float(until)
+                        if earliest is None or until_f < earliest:
+                            earliest = until_f
+                    except Exception:
+                        pass
+
+            snapshot["earliest_model_cooldown_until"] = earliest
+            return snapshot
+
+        except Exception as e:
+            snapshot["error"] = str(e)
+            return snapshot
 
     async def get_available_credentials_list(self) -> List[str]:
         """

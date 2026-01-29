@@ -331,25 +331,40 @@ async def messages(
                     error_content = chunk.body if isinstance(chunk.body, bytes) else chunk.body.encode('utf-8')
                     try:
                         gemini_error = json.loads(error_content.decode('utf-8'))
-                        
-                        # 提取真正的错误信息
+
+                        # 提取真正的错误信息 (兼容多种错误结构)
                         error_message = "Unknown error"
                         error_type = "api_error"
-                        
-                        # Google 错误格式: {"error": {"code": 400, "message": "{...}", "status": "..."}}
-                        if "error" in gemini_error:
-                            raw_message = gemini_error["error"].get("message", "")
-                            
-                            # 尝试解析嵌套的 JSON 错误消息
-                            try:
-                                nested_error = json.loads(raw_message)
-                                if "error" in nested_error:
-                                    error_message = nested_error["error"].get("message", raw_message)
-                                    error_type = nested_error["error"].get("type", "api_error")
-                                else:
+
+                        # 1) Google 错误格式: {"error": {"code": 400, "message": "{...}", "status": "..."}}
+                        # 2) 我们自己的错误格式: {"error": "当前无可用凭证"}
+                        # 3) 其他: {"message": "..."}
+                        if isinstance(gemini_error, dict) and "error" in gemini_error:
+                            err = gemini_error.get("error")
+                            if isinstance(err, dict):
+                                raw_message = err.get("message", "")
+                                # 尝试解析嵌套的 JSON 错误消息
+                                try:
+                                    nested_error = json.loads(raw_message)
+                                    if isinstance(nested_error, dict) and "error" in nested_error:
+                                        nested = nested_error.get("error") or {}
+                                        if isinstance(nested, dict):
+                                            error_message = nested.get("message", raw_message) or raw_message
+                                            error_type = nested.get("type", "api_error")
+                                        else:
+                                            error_message = raw_message
+                                    else:
+                                        error_message = raw_message
+                                except (json.JSONDecodeError, TypeError):
                                     error_message = raw_message
-                            except (json.JSONDecodeError, TypeError):
-                                error_message = raw_message
+                            elif isinstance(err, str):
+                                error_message = err
+                            elif err is not None:
+                                error_message = str(err)
+                        elif isinstance(gemini_error, dict) and "message" in gemini_error:
+                            error_message = str(gemini_error.get("message") or "Unknown error")
+                        else:
+                            error_message = error_content.decode('utf-8', errors='ignore')
                         
                         # 为 "Prompt is too long" 添加友好提示
                         if "too long" in error_message.lower() or "exceeds" in error_message.lower():

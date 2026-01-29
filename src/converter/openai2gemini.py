@@ -14,6 +14,7 @@ from src.converter.thoughtSignature_fix import (
     encode_tool_id_with_signature,
     decode_tool_id_and_signature,
 )
+from src.converter.tool_result_compressor import compact_tool_result
 from src.converter.utils import merge_system_messages
 
 from log import log
@@ -739,14 +740,19 @@ def convert_tool_message_to_function_response(message, all_messages: List = None
         name = "unknown_function"
         log.warning(f"Tool message missing function name, using default: {name}")
 
+    # Apply compression to raw content first
+    raw_content = message.content
+    if isinstance(raw_content, str):
+        raw_content = compact_tool_result(raw_content)
+
     try:
         # 尝试将 content 解析为 JSON
         response_data = (
-            json.loads(message.content) if isinstance(message.content, str) else message.content
+            json.loads(raw_content) if isinstance(raw_content, str) else raw_content
         )
     except (json.JSONDecodeError, TypeError):
         # 如果不是有效的 JSON，包装为对象
-        response_data = {"result": str(message.content)}
+        response_data = {"result": str(raw_content)}
 
     # 确保 response_data 是字典类型（Gemini API 要求 response 必须是对象）
     if not isinstance(response_data, dict):

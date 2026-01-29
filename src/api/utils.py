@@ -21,6 +21,56 @@ from log import log
 from src.credential_manager import CredentialManager
 
 
+def extract_google_error_message(error_text: str) -> str:
+    """Best-effort extraction of Google-style error message from JSON text."""
+    if not error_text:
+        return ""
+
+    try:
+        data = json.loads(error_text)
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            return str(msg) if msg is not None else ""
+        if isinstance(err, str):
+            return err
+    except Exception:
+        pass
+    return error_text
+
+
+def is_entitlement_403_error(error_text: str) -> bool:
+    """
+    Detect credential-level entitlement/licensing denials.
+
+    These are persistent for a given account and should trigger model-level cooldown
+    so we stop selecting the credential for that model.
+    """
+    msg = extract_google_error_message(error_text).lower()
+    return any(
+        s in msg
+        for s in (
+            "subscription_required",
+            "gemini code assist",
+            "named user",
+            "not eligible",
+            "lack a gemini code assist license",
+            "request an entitlement",
+        )
+    )
+
+
+def is_project_license_403_error(error_text: str) -> bool:
+    """
+    Detect the 403 that may be recoverable by re-resolving project_id.
+
+    Example:
+    - "configured to use a Google Cloud Project but lack a Gemini Code Assist license (#3501)"
+    """
+    msg = extract_google_error_message(error_text).lower()
+    return ("configured to use a google cloud project" in msg) or ("#3501" in msg)
+
+
 # ==================== 错误检查与处理 ====================
 
 async def check_should_auto_ban(status_code: int) -> bool:

@@ -5,6 +5,7 @@ Antigravity API Client - Handles communication with Google's Antigravity API
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,9 @@ from config import (
     get_antigravity_api_url,
     get_antigravity_stream2nostream,
     get_auto_ban_error_codes,
+    get_entitlement_403_model_cooldown_seconds,
+    get_long_quota_cooldown_rotate_threshold_seconds,
+    get_retry_rotate_delay_ms,
 )
 from log import log
 
@@ -30,7 +34,12 @@ from src.api.utils import (
     record_api_call_error,
     parse_and_log_cooldown,
     collect_streaming_response,
+    extract_google_error_message,
+    is_entitlement_403_error,
+    is_project_license_403_error,
 )
+
+from src.google_oauth_api import Credentials, fetch_project_id
 
 # 导入重试策略模块
 from src.api.retry_strategy import (
@@ -100,22 +109,30 @@ async def stream_request(
     """
     model_name = body.get("model", "")
 
+    # Track tried credentials for this request to avoid repeatedly hitting
+    # the same rate-limited/denied account when retrying.
+    tried_files: set[str] = set()
+
     # 1. 获取有效凭证
     cred_result = await credential_manager.get_valid_credential(
         mode="antigravity", model_key=model_name
     )
 
     if not cred_result:
-        # 如果返回值是None，直接返回错误500
-        log.error("[ANTIGRAVITY STREAM] 当前无可用凭证")
+        snapshot = await credential_manager.get_model_availability_snapshot(
+            mode="antigravity", model_key=model_name, exclude_filenames=None
+        )
+        log.error(f"[ANTIGRAVITY STREAM] 当前无可用凭证: {snapshot}")
+        status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
         yield Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=500,
-            media_type="application/json"
+            content=json.dumps({"error": "当前无可用凭证", "details": snapshot}),
+            status_code=status,
+            media_type="application/json",
         )
         return
 
     current_file, credential_data = cred_result
+    tried_files.add(str(current_file))
     access_token = credential_data.get("access_token") or credential_data.get("token")
     project_id = credential_data.get("project_id", "")
 
@@ -153,16 +170,18 @@ async def stream_request(
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
     next_cred_task = None  # 预热的下一个凭证任务
+    project_fix_attempted: set[str] = set()
 
     # 内部函数：快速更新凭证(只更新token和project_id,避免重建整个请求)
     async def refresh_credential_fast():
-        nonlocal current_file, access_token, auth_headers, project_id, final_payload
+        nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload
         cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_key=model_name
+            mode="antigravity", model_key=model_name, exclude_filenames=list(tried_files)
         )
         if not cred_result:
             return None
         current_file, credential_data = cred_result
+        tried_files.add(str(current_file))
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token:
@@ -198,6 +217,87 @@ async def stream_request(
                     # 使用新的重试策略判断是否应该重试
                     strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_body or "")
 
+                    # Special handling: entitlement/project permission errors should not spam the pool.
+                    extra_cooldown_until = None
+                    if status_code == 403 and error_body:
+                        if is_project_license_403_error(error_body) and current_file not in project_fix_attempted:
+                            project_fix_attempted.add(str(current_file))
+                            try:
+                                # Try to refresh token + re-fetch project_id to recover from #3501-style errors.
+                                creds = Credentials.from_dict(credential_data)
+                                refreshed = await creds.refresh_if_needed()
+                                if refreshed:
+                                    updated = creds.to_dict()
+                                    await credential_manager.add_antigravity_credential(current_file, updated)
+                                    credential_data = updated
+                                    access_token = updated.get("access_token") or updated.get("token")
+                                    auth_headers["Authorization"] = f"Bearer {access_token}"
+
+                                if not access_token:
+                                    raise ValueError("missing access_token after refresh")
+
+                                api_base_url = await get_antigravity_api_url()
+                                new_project_id = await fetch_project_id(
+                                    access_token=str(access_token),
+                                    user_agent=ANTIGRAVITY_USER_AGENT,
+                                    api_base_url=api_base_url,
+                                )
+                                if new_project_id and new_project_id != project_id:
+                                    project_id = new_project_id
+                                    final_payload["project"] = project_id
+                                    credential_data["project_id"] = project_id
+                                    await credential_manager.add_antigravity_credential(current_file, credential_data)
+                                    await credential_manager.update_credential_state(
+                                        current_file,
+                                        {"disabled": False, "error_codes": []},
+                                        mode="antigravity",
+                                    )
+                                    log.info(
+                                        f"[ANTIGRAVITY STREAM] Recovered by updating project_id for {current_file}"
+                                    )
+
+                                    # Retry immediately on the same credential.
+                                    need_retry = True
+                                    break
+                            except Exception as e:
+                                log.warning(f"[ANTIGRAVITY STREAM] Project re-resolve failed: {e}")
+
+                        if is_entitlement_403_error(error_body):
+                            cooldown_secs = await get_entitlement_403_model_cooldown_seconds()
+                            extra_cooldown_until = time.time() + cooldown_secs
+
+                    # For long quota reset delays, rotate immediately instead of sleeping.
+                    immediate_rotate = False
+                    parsed_until: Optional[float] = None
+                    if status_code == 429 and error_body:
+                        try:
+                            parsed_until = await parse_and_log_cooldown(error_body, mode="antigravity")
+                        except Exception:
+                            parsed_until = None
+                        if parsed_until is not None:
+                            threshold = await get_long_quota_cooldown_rotate_threshold_seconds()
+                            if (parsed_until - time.time()) > float(threshold):
+                                immediate_rotate = True
+
+                    if immediate_rotate:
+                        # Record with precise model cooldown then rotate without waiting.
+                        await record_api_call_error(
+                            credential_manager,
+                            current_file,
+                            status_code,
+                            parsed_until,
+                            mode="antigravity",
+                            model_key=model_name,
+                        )
+                        need_retry = attempt < max_retries
+                        if need_retry:
+                            delay_ms = await get_retry_rotate_delay_ms()
+                            await asyncio.sleep(delay_ms / 1000.0)
+                            break
+                        log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        yield chunk
+                        return
+
                     if strategy != RetryStrategy.NO_RETRY:
                         # 可重试的错误 (429, 503, 529, 500, 401, 403)
                         log.warning(
@@ -211,13 +311,15 @@ async def stream_request(
                             if next_cred_task is None and attempt < max_retries:
                                 next_cred_task = asyncio.create_task(
                                     credential_manager.get_valid_credential(
-                                        mode="antigravity", model_key=model_name
+                                        mode="antigravity",
+                                        model_key=model_name,
+                                        exclude_filenames=list(tried_files),
                                     )
                                 )
 
                         # 记录错误
-                        cooldown_until = None
-                        if status_code == 429 and error_body:
+                        cooldown_until = extra_cooldown_until
+                        if cooldown_until is None and status_code == 429 and error_body:
                             try:
                                 cooldown_until = await parse_and_log_cooldown(error_body, mode="antigravity")
                             except Exception:
@@ -307,19 +409,18 @@ async def stream_request(
 
                         if cred_result:
                             current_file, credential_data = cred_result
+                            tried_files.add(str(current_file))
                             access_token = credential_data.get("access_token") or credential_data.get("token")
                             project_id = credential_data.get("project_id", "")
                             if access_token and project_id:
                                 auth_headers["Authorization"] = f"Bearer {access_token}"
                                 final_payload["project"] = project_id
-                                await asyncio.sleep(retry_interval)
                                 continue  # 重试
                     except Exception as e:
                         log.warning(f"[ANTIGRAVITY STREAM] 预热凭证任务失败: {e}")
                         next_cred_task = None
 
                 # 如果预热的凭证不可用,则同步获取
-                await asyncio.sleep(retry_interval)
 
                 if not await refresh_credential_fast():
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
@@ -335,7 +436,8 @@ async def stream_request(
             log.error(f"[ANTIGRAVITY STREAM] 流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY STREAM] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
-                await asyncio.sleep(retry_interval)
+                delay_ms = await get_retry_rotate_delay_ms()
+                await asyncio.sleep(delay_ms / 1000.0)
                 continue
             else:
                 # 所有重试都失败，返回最后一次的错误（如果有）
@@ -374,21 +476,29 @@ async def non_stream_request(
 
     model_name = body.get("model", "")
 
+    # Track tried credentials for this request to avoid repeatedly hitting
+    # the same rate-limited/denied account when retrying.
+    tried_files: set[str] = set()
+
     # 1. 获取有效凭证
     cred_result = await credential_manager.get_valid_credential(
         mode="antigravity", model_key=model_name
     )
 
     if not cred_result:
-        # 如果返回值是None，直接返回错误500
-        log.error("[ANTIGRAVITY] 当前无可用凭证")
+        snapshot = await credential_manager.get_model_availability_snapshot(
+            mode="antigravity", model_key=model_name, exclude_filenames=None
+        )
+        log.error(f"[ANTIGRAVITY] 当前无可用凭证: {snapshot}")
+        status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
         return Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=500,
-            media_type="application/json"
+            content=json.dumps({"error": "当前无可用凭证", "details": snapshot}),
+            status_code=status,
+            media_type="application/json",
         )
 
     current_file, credential_data = cred_result
+    tried_files.add(str(current_file))
     access_token = credential_data.get("access_token") or credential_data.get("token")
     project_id = credential_data.get("project_id", "")
 
@@ -425,16 +535,18 @@ async def non_stream_request(
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
     next_cred_task = None  # 预热的下一个凭证任务
+    project_fix_attempted: set[str] = set()
 
     # 内部函数：快速更新凭证(只更新token和project_id,避免重建整个请求)
     async def refresh_credential_fast():
-        nonlocal current_file, access_token, auth_headers, project_id, final_payload
+        nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload
         cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_key=model_name
+            mode="antigravity", model_key=model_name, exclude_filenames=list(tried_files)
         )
         if not cred_result:
             return None
         current_file, credential_data = cred_result
+        tried_files.add(str(current_file))
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token:
@@ -508,6 +620,85 @@ async def non_stream_request(
                 # 使用新的重试策略判断是否应该重试
                 strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_text or "")
 
+                # Special handling: entitlement/project permission errors should not spam the pool.
+                extra_cooldown_until = None
+                if status_code == 403 and error_text:
+                    if is_project_license_403_error(error_text) and current_file not in project_fix_attempted:
+                        project_fix_attempted.add(str(current_file))
+                        try:
+                            creds = Credentials.from_dict(credential_data)
+                            refreshed = await creds.refresh_if_needed()
+                            if refreshed:
+                                updated = creds.to_dict()
+                                await credential_manager.add_antigravity_credential(current_file, updated)
+                                credential_data = updated
+                                access_token = updated.get("access_token") or updated.get("token")
+                                auth_headers["Authorization"] = f"Bearer {access_token}"
+
+                            if not access_token:
+                                raise ValueError("missing access_token after refresh")
+
+                            api_base_url = await get_antigravity_api_url()
+                            new_project_id = await fetch_project_id(
+                                access_token=str(access_token),
+                                user_agent=ANTIGRAVITY_USER_AGENT,
+                                api_base_url=api_base_url,
+                            )
+                            if new_project_id and new_project_id != project_id:
+                                project_id = new_project_id
+                                final_payload["project"] = project_id
+                                credential_data["project_id"] = project_id
+                                await credential_manager.add_antigravity_credential(current_file, credential_data)
+                                await credential_manager.update_credential_state(
+                                    current_file,
+                                    {"disabled": False, "error_codes": []},
+                                    mode="antigravity",
+                                )
+                                log.info(
+                                    f"[ANTIGRAVITY] Recovered by updating project_id for {current_file}"
+                                )
+
+                                # Retry immediately on the same credential.
+                                if attempt < max_retries:
+                                    await asyncio.sleep((await get_retry_rotate_delay_ms()) / 1000.0)
+                                    need_retry = True
+                                    continue
+                        except Exception as e:
+                            log.warning(f"[ANTIGRAVITY] Project re-resolve failed: {e}")
+
+                    if is_entitlement_403_error(error_text):
+                        cooldown_secs = await get_entitlement_403_model_cooldown_seconds()
+                        extra_cooldown_until = time.time() + cooldown_secs
+
+                # For long quota reset delays, rotate immediately instead of sleeping.
+                immediate_rotate = False
+                parsed_until: Optional[float] = None
+                if status_code == 429 and error_text:
+                    try:
+                        parsed_until = await parse_and_log_cooldown(error_text, mode="antigravity")
+                    except Exception:
+                        parsed_until = None
+                    if parsed_until is not None:
+                        threshold = await get_long_quota_cooldown_rotate_threshold_seconds()
+                        if (parsed_until - time.time()) > float(threshold):
+                            immediate_rotate = True
+
+                if immediate_rotate:
+                    await record_api_call_error(
+                        credential_manager,
+                        current_file,
+                        status_code,
+                        parsed_until,
+                        mode="antigravity",
+                        model_key=model_name,
+                    )
+                    if attempt < max_retries:
+                        need_retry = True
+                        await asyncio.sleep((await get_retry_rotate_delay_ms()) / 1000.0)
+                    else:
+                        log.error(f"[ANTIGRAVITY] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        return last_error_response
+
                 if strategy != RetryStrategy.NO_RETRY:
                     # 可重试的错误 (429, 503, 529, 500, 401, 403)
                     log.warning(
@@ -521,13 +712,15 @@ async def non_stream_request(
                         if next_cred_task is None and attempt < max_retries:
                             next_cred_task = asyncio.create_task(
                                 credential_manager.get_valid_credential(
-                                    mode="antigravity", model_key=model_name
+                                    mode="antigravity",
+                                    model_key=model_name,
+                                    exclude_filenames=list(tried_files),
                                 )
                             )
 
                     # 记录错误
-                    cooldown_until = None
-                    if status_code == 429 and error_text:
+                    cooldown_until = extra_cooldown_until
+                    if cooldown_until is None and status_code == 429 and error_text:
                         try:
                             cooldown_until = await parse_and_log_cooldown(error_text, mode="antigravity")
                         except Exception:
@@ -562,7 +755,7 @@ async def non_stream_request(
                     )
                     return last_error_response
             
-            # 统一处理重试
+                    # 统一处理重试
             if need_retry:
                 log.info(f"[ANTIGRAVITY] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
 
@@ -574,19 +767,18 @@ async def non_stream_request(
 
                         if cred_result:
                             current_file, credential_data = cred_result
+                            tried_files.add(str(current_file))
                             access_token = credential_data.get("access_token") or credential_data.get("token")
                             project_id = credential_data.get("project_id", "")
                             if access_token and project_id:
                                 auth_headers["Authorization"] = f"Bearer {access_token}"
                                 final_payload["project"] = project_id
-                                await asyncio.sleep(retry_interval)
                                 continue  # 重试
                     except Exception as e:
                         log.warning(f"[ANTIGRAVITY] 预热凭证任务失败: {e}")
                         next_cred_task = None
 
                 # 如果预热的凭证不可用,则同步获取
-                await asyncio.sleep(retry_interval)
 
                 if not await refresh_credential_fast():
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
@@ -601,7 +793,8 @@ async def non_stream_request(
             log.error(f"[ANTIGRAVITY] 非流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
-                await asyncio.sleep(retry_interval)
+                delay_ms = await get_retry_rotate_delay_ms()
+                await asyncio.sleep(delay_ms / 1000.0)
                 continue
             else:
                 # 所有重试都失败，返回最后一次的错误（如果有）

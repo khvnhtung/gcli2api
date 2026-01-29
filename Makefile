@@ -55,7 +55,7 @@ docker-build:
 	docker build -t gcli2api:latest .
 
 docker-run:
-	docker run -d --name gcli2api --network host -e PASSWORD=pwd -e PORT=7861 -v $$(pwd)/data/creds:/app/creds gcli2api:latest
+	docker run -d --name gcli2api --network host -e PASSWORD=pwd -e PORT=7861 -v $$(pwd)/creds:/app/creds gcli2api:latest
 
 docker-compose-up:
 	docker-compose up -d
