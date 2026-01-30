@@ -16,7 +16,12 @@ from src.converter.utils import merge_system_messages
 
 from src.converter.thoughtSignature_fix import (
     encode_tool_id_with_signature,
-    decode_tool_id_and_signature
+    decode_tool_id_and_signature,
+    reorder_messages_content,
+    cache_signature,
+    get_cached_signature,
+    cache_thinking_signature,
+    MIN_SIGNATURE_LENGTH,
 )
 
 DEFAULT_TEMPERATURE = 0.4
@@ -26,8 +31,7 @@ _DEBUG_TRUE = {"1", "true", "yes", "on"}
 # Thinking 块验证和清理
 # ============================================================================
 
-# 最小有效签名长度
-MIN_SIGNATURE_LENGTH = 10
+# MIN_SIGNATURE_LENGTH is now imported from thoughtSignature_fix
 
 
 def has_valid_thoughtsignature(block: Dict[str, Any]) -> bool:
@@ -1207,6 +1211,10 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
     # [CRITICAL FIX] 清理 cache_control 字段
     # Claude Code CLI 发送的 cache_control 会被 Cloud Code API 拒绝
     messages = clean_cache_control(messages)
+
+    # [CRITICAL FIX] 重排序 assistant 消息内容
+    # 确保 thinking 块在前，text 在中间，tool_use 在后
+    reorder_messages_content(messages)
 
     # [CRITICAL FIX] 过滤并修复 Thinking 块签名
     # 在转换前先过滤无效的 thinking 块
