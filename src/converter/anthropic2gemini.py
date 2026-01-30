@@ -18,7 +18,6 @@ from src.converter.thoughtSignature_fix import (
     encode_tool_id_with_signature,
     decode_tool_id_and_signature
 )
-from src.converter.tool_result_compressor import compact_tool_result
 
 DEFAULT_TEMPERATURE = 0.4
 _DEBUG_TRUE = {"1", "true", "yes", "on"}
@@ -709,30 +708,36 @@ def clean_json_schema(schema: Any) -> Any:
 def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
     """
     将 Anthropic tools[] 转换为下游 tools（functionDeclarations）结构。
+
+    注意: 所有函数声明必须合并到单个 functionDeclarations 数组中，
+    因为 Gemini API 不支持多个非搜索工具对象在 tools 数组中。
+    错误: "Multiple tools are supported only when they are all search tools."
     """
     if not anthropic_tools:
         return None
 
-    gemini_tools: List[Dict[str, Any]] = []
+    # Collect all function declarations into a single array
+    function_declarations: List[Dict[str, Any]] = []
     for tool in anthropic_tools:
         name = tool.get("name", "nameless_function")
         description = tool.get("description", "")
         input_schema = tool.get("input_schema", {}) or {}
         parameters = clean_json_schema(input_schema)
 
-        gemini_tools.append(
+        function_declarations.append(
             {
-                "functionDeclarations": [
-                    {
-                        "name": name,
-                        "description": description,
-                        "parameters": parameters,
-                    }
-                ]
+                "name": name,
+                "description": description,
+                "parameters": parameters,
             }
         )
 
-    return gemini_tools or None
+    if not function_declarations:
+        return None
+
+    # Return a single tools object with all declarations consolidated
+    # This avoids "Multiple tools are supported only when they are all search tools" error
+    return [{"functionDeclarations": function_declarations}]
 
 
 # ============================================================================
@@ -741,14 +746,14 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
 
 def _extract_tool_result_output(content: Any, max_chars: Optional[int] = None) -> str:
     """
-    从 tool_result.content 中提取输出字符串，并应用压缩。
+    从 tool_result.content 中提取输出字符串。
     
     Args:
         content: tool_result 的 content 字段
-        max_chars: 最大字符数限制（None 使用默认值 200K）
+        max_chars: 保留参数签名兼容（不再使用）
     
     Returns:
-        压缩后的输出字符串
+        输出字符串
     """
     # Extract raw output
     raw_output: str
@@ -765,8 +770,8 @@ def _extract_tool_result_output(content: Any, max_chars: Optional[int] = None) -
     else:
         raw_output = str(content)
     
-    # Apply compression
-    return compact_tool_result(raw_output, max_chars)
+    # No compression/truncation here. Keep the full tool output.
+    return raw_output
 
 
 def convert_messages_to_contents(
