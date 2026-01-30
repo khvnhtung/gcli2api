@@ -91,10 +91,75 @@ def sanitize_thinking_block(block: Dict[str, Any]) -> Dict[str, Any]:
     return sanitized
 
 
+def clean_cache_control(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Remove cache_control fields from all content blocks in messages.
+
+    This is a critical fix for Claude Code CLI which sends cache_control
+    fields that the Cloud Code API rejects with "Extra inputs are not permitted".
+
+    Ported from antigravity-claude-proxy's thinking-utils.js.
+
+    Args:
+        messages: Array of messages in Anthropic format
+
+    Returns:
+        Messages with cache_control fields removed
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    removed_count = 0
+    cleaned_messages = []
+
+    for message in messages:
+        if not isinstance(message, dict):
+            cleaned_messages.append(message)
+            continue
+
+        content = message.get("content")
+
+        # Handle string content (no cache_control possible)
+        if isinstance(content, str):
+            cleaned_messages.append(message)
+            continue
+
+        # Handle non-list content
+        if not isinstance(content, list):
+            cleaned_messages.append(message)
+            continue
+
+        # Clean each block in content array
+        cleaned_content = []
+        for block in content:
+            if not isinstance(block, dict):
+                cleaned_content.append(block)
+                continue
+
+            # Check if cache_control exists
+            if "cache_control" not in block:
+                cleaned_content.append(block)
+                continue
+
+            # Create a copy without cache_control
+            clean_block = {k: v for k, v in block.items() if k != "cache_control"}
+            cleaned_content.append(clean_block)
+            removed_count += 1
+
+        # Create new message with cleaned content
+        cleaned_message = {**message, "content": cleaned_content}
+        cleaned_messages.append(cleaned_message)
+
+    if removed_count > 0:
+        log.debug(f"[CacheControl] Removed cache_control from {removed_count} block(s)")
+
+    return cleaned_messages
+
+
 def remove_trailing_unsigned_thinking(blocks: List[Dict[str, Any]]) -> None:
     """
     移除尾部的无签名 thinking 块
-    
+
     Args:
         blocks: content blocks 列表 (会被修改)
     """
@@ -1138,7 +1203,11 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
     messages = payload.get("messages") or []
     if not isinstance(messages, list):
         messages = []
-    
+
+    # [CRITICAL FIX] 清理 cache_control 字段
+    # Claude Code CLI 发送的 cache_control 会被 Cloud Code API 拒绝
+    messages = clean_cache_control(messages)
+
     # [CRITICAL FIX] 过滤并修复 Thinking 块签名
     # 在转换前先过滤无效的 thinking 块
     filter_invalid_thinking_blocks(messages)
