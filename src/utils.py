@@ -1,4 +1,6 @@
 import os
+import re
+import platform
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -14,9 +16,78 @@ security = HTTPBearer()
 
 GEMINICLI_USER_AGENT = os.getenv("GEMINICLI_USER_AGENT", "GeminiCLI/0.1.5 (Windows; AMD64)")
 
-# Google-side Antigravity endpoints appear to enforce a minimum client version.
-# Make this configurable so users can quickly match whatever the upstream expects.
-ANTIGRAVITY_USER_AGENT = os.getenv("ANTIGRAVITY_USER_AGENT", "antigravity/1.16.0 windows/amd64")
+# ====================== Dynamic Antigravity Version ======================
+# Google-side Antigravity endpoints enforce a minimum client version.
+# We dynamically fetch the latest version from Google's updater API.
+
+VERSION_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
+CHANGELOG_URL = "https://antigravity.google/changelog"
+FALLBACK_VERSION = "1.15.8"  # Safe fallback if fetch fails
+VERSION_REGEX = re.compile(r"\d+\.\d+\.\d+")
+
+# Cache the fetched version to avoid repeated requests
+_cached_antigravity_version: Optional[str] = None
+
+
+def _fetch_antigravity_version() -> str:
+    """Fetch the latest Antigravity version from Google's updater API."""
+    global _cached_antigravity_version
+    
+    # Return cached version if available
+    if _cached_antigravity_version:
+        return _cached_antigravity_version
+    
+    # Check for env override first
+    env_override = os.getenv("ANTIGRAVITY_USER_AGENT")
+    if env_override:
+        log.info(f"Using ANTIGRAVITY_USER_AGENT from env: {env_override}")
+        return env_override
+    
+    import requests
+    
+    # Try fetching from updater API
+    for url, name in [(VERSION_URL, "updater-api"), (CHANGELOG_URL, "changelog")]:
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                text = resp.text[:5000]  # Limit scan for efficiency
+                match = VERSION_REGEX.search(text)
+                if match:
+                    version = match.group()
+                    _cached_antigravity_version = version
+                    log.info(f"Fetched Antigravity version {version} from {name}")
+                    return version
+        except Exception as e:
+            log.debug(f"Failed to fetch version from {name}: {e}")
+    
+    # Fallback
+    log.warning(f"Using fallback Antigravity version: {FALLBACK_VERSION}")
+    _cached_antigravity_version = FALLBACK_VERSION
+    return FALLBACK_VERSION
+
+
+def get_antigravity_user_agent() -> str:
+    """Get the Antigravity User-Agent string with dynamic version."""
+    # Check for full override first
+    env_override = os.getenv("ANTIGRAVITY_USER_AGENT")
+    if env_override:
+        return env_override
+    
+    version = _fetch_antigravity_version()
+    # Detect OS and arch
+    os_name = platform.system().lower()
+    arch = platform.machine().lower()
+    # Normalize arch names
+    if arch in ("x86_64", "amd64"):
+        arch = "amd64"
+    elif arch in ("aarch64", "arm64"):
+        arch = "arm64"
+    
+    return f"antigravity/{version} {os_name}/{arch}"
+
+
+# Initialize on module load - fetches version once and caches it
+ANTIGRAVITY_USER_AGENT = get_antigravity_user_agent()
 
 # OAuth Configuration - 标准模式
 CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"

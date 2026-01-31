@@ -1382,18 +1382,6 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                     status_code=400, detail="抗截断最大重试次数必须是1-10之间的整数"
                 )
 
-        if "tool_result_compression_enabled" in new_config:
-            if not isinstance(new_config["tool_result_compression_enabled"], bool):
-                raise HTTPException(status_code=400, detail="工具结果压缩开关必须是布尔值")
-
-        if "tool_result_max_chars" in new_config:
-            if (
-                not isinstance(new_config["tool_result_max_chars"], int)
-                or new_config["tool_result_max_chars"] < 1000
-                or new_config["tool_result_max_chars"] > 2_000_000
-            ):
-                raise HTTPException(status_code=400, detail="工具结果最大字符数必须在1000-2000000之间")
-
         if "compatibility_mode_enabled" in new_config:
             if not isinstance(new_config["compatibility_mode_enabled"], bool):
                 raise HTTPException(status_code=400, detail="兼容性模式开关必须是布尔值")
@@ -1405,42 +1393,6 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         if "antigravity_stream2nostream" in new_config:
             if not isinstance(new_config["antigravity_stream2nostream"], bool):
                 raise HTTPException(status_code=400, detail="Antigravity流式转非流式开关必须是布尔值")
-
-        if "context_compression_enabled" in new_config:
-            if not isinstance(new_config["context_compression_enabled"], bool):
-                raise HTTPException(status_code=400, detail="上下文压缩开关必须是布尔值")
-
-        if "context_compression_trigger_input_tokens" in new_config:
-            if (
-                not isinstance(new_config["context_compression_trigger_input_tokens"], int)
-                or new_config["context_compression_trigger_input_tokens"] < 10_000
-                or new_config["context_compression_trigger_input_tokens"] > 5_000_000
-            ):
-                raise HTTPException(status_code=400, detail="上下文压缩触发阈值必须在10000-5000000之间")
-
-        if "context_compression_keep_last_messages" in new_config:
-            if (
-                not isinstance(new_config["context_compression_keep_last_messages"], int)
-                or new_config["context_compression_keep_last_messages"] < 0
-                or new_config["context_compression_keep_last_messages"] > 100
-            ):
-                raise HTTPException(status_code=400, detail="压缩后保留消息数必须在0-100之间")
-
-        if "context_compression_summary_model" in new_config:
-            if not isinstance(new_config["context_compression_summary_model"], str):
-                raise HTTPException(status_code=400, detail="压缩摘要模型必须是字符串")
-
-        if "context_compression_summary_max_output_tokens" in new_config:
-            if (
-                not isinstance(new_config["context_compression_summary_max_output_tokens"], int)
-                or new_config["context_compression_summary_max_output_tokens"] < 256
-                or new_config["context_compression_summary_max_output_tokens"] > 64_000
-            ):
-                raise HTTPException(status_code=400, detail="压缩摘要最大输出tokens必须在256-64000之间")
-
-        if "context_compression_force_on_prompt_too_long" in new_config:
-            if not isinstance(new_config["context_compression_force_on_prompt_too_long"], bool):
-                raise HTTPException(status_code=400, detail="超长提示词自动重试开关必须是布尔值")
 
         if "realtime_quota_refresh_enabled" in new_config:
             if not isinstance(new_config["realtime_quota_refresh_enabled"], bool):

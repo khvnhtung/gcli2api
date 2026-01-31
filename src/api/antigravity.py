@@ -543,10 +543,25 @@ async def stream_request(
                         log.debug(f"[ANTIGRAVITY STREAM] 开始接收流式响应，模型: {model_name}")
 
                     # 记录原始chunk内容（用于调试）
+                    # Check for thoughtSignature in raw response
+                    chunk_str = chunk.decode('utf-8', errors='ignore') if isinstance(chunk, bytes) else str(chunk)
+                    if 'functionCall' in chunk_str:
+                        has_sig = 'thoughtSignature' in chunk_str
+                        log.info(f"[UPSTREAM_RAW] functionCall detected, has_thoughtSignature={has_sig}")
+                        # Log full chunk for debugging signature issue
+                        log.info(f"[UPSTREAM_RAW] FULL functionCall chunk: {chunk_str[:1000]}")
+                        if has_sig:
+                            # Try to extract and log the signature presence
+                            import re
+                            sig_match = re.search(r'"thoughtSignature"\s*:\s*"([^"]{0,50})', chunk_str)
+                            if sig_match:
+                                log.info(f"[UPSTREAM_RAW] thoughtSignature preview: {sig_match.group(1)}...")
+                        else:
+                            log.warning(f"[UPSTREAM_RAW] NO thoughtSignature in functionCall response!")
                     if isinstance(chunk, bytes):
-                        log.debug(f"[ANTIGRAVITY STREAM RAW] chunk(bytes): {chunk}")
+                        log.debug(f"[ANTIGRAVITY STREAM RAW] chunk(bytes): {chunk[:500] if len(chunk) > 500 else chunk}")
                     else:
-                        log.debug(f"[ANTIGRAVITY STREAM RAW] chunk(str): {chunk}")
+                        log.debug(f"[ANTIGRAVITY STREAM RAW] chunk(str): {chunk[:500] if len(chunk) > 500 else chunk}")
 
                     yield chunk
 

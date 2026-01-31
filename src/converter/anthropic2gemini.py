@@ -21,6 +21,8 @@ from src.converter.thoughtSignature_fix import (
     cache_signature,
     get_cached_signature,
     cache_thinking_signature,
+    get_cached_signature_family,
+    get_model_family,
     MIN_SIGNATURE_LENGTH,
 )
 
@@ -957,6 +959,17 @@ def convert_messages_to_contents(
                     encoded_id = item.get("id") or ""
                     original_id, thoughtsignature = decode_tool_id_and_signature(encoded_id)
 
+                    log.info(f"[SIGNATURE_TRACE] tool_use INPUT: encoded_id={encoded_id[:50]}..., extracted_sig={'present('+str(len(thoughtsignature))+')' if thoughtsignature else 'None'}")
+
+                    # [Phase 3] Try to restore signature from cache if not present
+                    if not thoughtsignature or len(thoughtsignature) < MIN_SIGNATURE_LENGTH:
+                        cached_sig = get_cached_signature(original_id)
+                        if cached_sig:
+                            thoughtsignature = cached_sig
+                            log.info(f"[SIGNATURE_TRACE] RESTORED from cache for tool_use_id={original_id[:30]}..., sig_len={len(cached_sig)}")
+                        else:
+                            log.info(f"[SIGNATURE_TRACE] NO CACHE HIT for tool_use_id={original_id[:30]}...")
+
                     fc_part: Dict[str, Any] = {
                         "functionCall": {
                             "id": original_id,  # 使用原始ID，不带签名
@@ -968,8 +981,10 @@ def convert_messages_to_contents(
                     # 如果提取到签名则添加，否则使用占位符以满足 Gemini API 要求
                     if thoughtsignature:
                         fc_part["thoughtSignature"] = thoughtsignature
+                        log.info(f"[SIGNATURE_TRACE] tool_use OUTPUT: using real signature, len={len(thoughtsignature)}")
                     else:
                         fc_part["thoughtSignature"] = "skip_thought_signature_validator"
+                        log.warning(f"[SIGNATURE_TRACE] tool_use OUTPUT: using PLACEHOLDER signature (skip_thought_signature_validator)")
 
                     parts.append(fc_part)
                 elif item_type == "tool_result":
@@ -1160,15 +1175,20 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     if thinking and isinstance(thinking, dict):
         thinking_type = thinking.get("type")
         budget_tokens = thinking.get("budget_tokens")
-        
+
         # 如果启用了 extended thinking，设置 thinkingConfig
         if thinking_type == "enabled":
             is_plan_mode = True
             thinking_config: Dict[str, Any] = {}
-            
+
             # 设置思考预算，默认使用较大的值以支持计划模式
+            # CRITICAL FIX: Gemini API requires minimum 1024 tokens for thinking budget
             if budget_tokens is not None:
-                thinking_config["thinkingBudget"] = budget_tokens
+                # Enforce minimum of 1024 to avoid API rejection
+                effective_budget = max(1024, int(budget_tokens))
+                if budget_tokens < 1024:
+                    log.warning(f"[ANTHROPIC2GEMINI] budget_tokens {budget_tokens} below minimum 1024, using 1024")
+                thinking_config["thinkingBudget"] = effective_budget
             else:
                 # 默认给一个较大的思考预算以支持完整的计划生成
                 thinking_config["thinkingBudget"] = 48000
@@ -1344,14 +1364,18 @@ def gemini_to_anthropic_response(
             thinking_text = part.get("text", "")
             if thinking_text is None:
                 thinking_text = ""
-            
+
             block: Dict[str, Any] = {"type": "thinking", "thinking": str(thinking_text)}
-            
+
             # 如果有 thoughtsignature 则添加
             thoughtsignature = part.get("thoughtSignature")
             if thoughtsignature:
                 block["thoughtSignature"] = thoughtsignature
-            
+                # [Phase 3] Cache thinking signature with model family
+                if len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
+                    model_family = get_model_family(model)
+                    cache_thinking_signature(thoughtsignature, model_family)
+
             content.append(block)
             continue
 
@@ -1366,7 +1390,11 @@ def gemini_to_anthropic_response(
             fc = part.get("functionCall", {}) or {}
             original_id = fc.get("id") or f"toolu_{uuid.uuid4().hex}"
             thoughtsignature = part.get("thoughtSignature")
-            
+
+            # [Phase 3] Cache tool signature by tool_use_id for restoration on next request
+            if thoughtsignature and len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
+                cache_signature(original_id, thoughtsignature)
+
             # 对工具调用ID进行签名编码
             encoded_id = encode_tool_id_with_signature(original_id, thoughtsignature)
             content.append(
@@ -1561,7 +1589,12 @@ async def gemini_stream_to_anthropic_stream(
                 if part.get("thought") is True:
                     thinking_text = part.get("text", "")
                     thoughtsignature = part.get("thoughtSignature")
-                    
+
+                    # [Phase 3] Cache thinking signature with model family for cross-model compatibility
+                    if thoughtsignature and len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
+                        model_family = get_model_family(model)
+                        cache_thinking_signature(thoughtsignature, model_family)
+
                     # 检查是否需要关闭上一个块并开启新的 thinking 块
                     if current_block_type != "thinking":
                         close_evt = _close_block()
@@ -1662,9 +1695,19 @@ async def gemini_stream_to_anthropic_stream(
                     fc = part.get("functionCall", {}) or {}
                     original_id = fc.get("id") or f"toolu_{uuid.uuid4().hex}"
                     thoughtsignature = part.get("thoughtSignature")
+
+                    log.info(f"[SIGNATURE_TRACE] RESPONSE functionCall: id={original_id[:30]}..., has_sig={thoughtsignature is not None}, sig_len={len(thoughtsignature) if thoughtsignature else 0}")
+
                     tool_id = encode_tool_id_with_signature(original_id, thoughtsignature)
                     tool_name = fc.get("name") or ""
                     tool_args = _remove_nulls_for_tool_input(fc.get("args", {}) or {})
+
+                    # [Phase 3] Cache tool signature by tool_use_id for restoration on next request
+                    if thoughtsignature and len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
+                        cache_signature(original_id, thoughtsignature)
+                        log.info(f"[SIGNATURE_TRACE] CACHING signature for future requests: id={original_id[:30]}...")
+                    else:
+                        log.warning(f"[SIGNATURE_TRACE] NOT CACHING - no valid signature from upstream: id={original_id[:30]}...")
 
                     if _anthropic_debug_enabled():
                         log.info(

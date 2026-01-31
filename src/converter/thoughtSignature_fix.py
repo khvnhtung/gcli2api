@@ -81,9 +81,12 @@ def decode_tool_id_and_signature(encoded_id: str) -> Tuple[str, Optional[str]]:
         ('call_123', None)
     """
     if not encoded_id or THOUGHT_SIGNATURE_SEPARATOR not in encoded_id:
+        log.debug(f"[SignatureDecode] No embedded signature in ID: {encoded_id[:40] if encoded_id else 'None'}...")
         return encoded_id, None
     parts = encoded_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)
-    return parts[0], parts[1] if len(parts) == 2 else None
+    sig = parts[1] if len(parts) == 2 else None
+    log.info(f"[SignatureDecode] EXTRACTED embedded signature from ID: orig_id={parts[0][:30]}..., sig_len={len(sig) if sig else 0}")
+    return parts[0], sig
 
 
 # ============================================================================
@@ -112,12 +115,13 @@ def cache_signature(tool_use_id: str, signature: str) -> None:
         signature: The thoughtSignature to cache
     """
     if not tool_use_id or not signature:
+        log.debug(f"[SignatureCache] SKIP cache_signature: tool_use_id={tool_use_id}, signature={'present' if signature else 'None'}")
         return
     _signature_cache[tool_use_id] = {
         "signature": signature,
         "timestamp": time.time() * 1000  # ms
     }
-    log.debug(f"[SignatureCache] Cached signature for tool_use_id={tool_use_id[:20]}...")
+    log.info(f"[SignatureCache] CACHED signature for tool_use_id={tool_use_id[:30]}..., sig_len={len(signature)}, cache_size={len(_signature_cache)}")
 
 
 def get_cached_signature(tool_use_id: str) -> Optional[str]:
@@ -131,18 +135,22 @@ def get_cached_signature(tool_use_id: str) -> Optional[str]:
         The cached signature or None if not found/expired
     """
     if not tool_use_id:
+        log.debug(f"[SignatureCache] GET: empty tool_use_id")
         return None
 
     entry = _signature_cache.get(tool_use_id)
     if not entry:
+        log.info(f"[SignatureCache] MISS: tool_use_id={tool_use_id[:30]}..., cache_size={len(_signature_cache)}")
         return None
 
     # Check TTL
     now_ms = time.time() * 1000
     if now_ms - entry["timestamp"] > SIGNATURE_CACHE_TTL_MS:
         del _signature_cache[tool_use_id]
+        log.info(f"[SignatureCache] EXPIRED: tool_use_id={tool_use_id[:30]}...")
         return None
 
+    log.info(f"[SignatureCache] HIT: tool_use_id={tool_use_id[:30]}..., sig_len={len(entry['signature'])}")
     return entry["signature"]
 
 

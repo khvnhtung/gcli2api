@@ -519,6 +519,13 @@ def apply_thinking_recovery_if_needed(
 
     This is the main entry point for thinking recovery.
 
+    Recovery scenarios:
+    1. Interrupted tool calls - user sent new message before tool_result
+       → Always apply recovery (inject "[Tool call was interrupted.]")
+    2. Tool loops with missing thinking signatures
+       → Only apply if signatures were originally present but got corrupted
+       → Skip if upstream never provides signatures (normal operation)
+
     Args:
         messages: List of messages
         model_name: Model name (e.g., "gemini-2.5-flash", "claude-sonnet-4-5")
@@ -530,23 +537,107 @@ def apply_thinking_recovery_if_needed(
     if not thinking_enabled:
         return messages
 
-    if not needs_thinking_recovery(messages):
-        return messages
+    # Analyze conversation state first
+    state = analyze_conversation_state(messages)
 
-    # Determine model family
-    model_lower = model_name.lower()
-    is_gemini = "gemini" in model_lower
-    is_claude = "claude" in model_lower
+    # Always handle interrupted tools - this is valid regardless of signatures
+    if state.interrupted_tool:
+        log.info("[ThinkingRecovery] Applying recovery for interrupted tool call")
+        return close_tool_loop_for_thinking(messages, _get_target_family(model_name))
 
-    if is_gemini:
-        log.debug("[ThinkingRecovery] Applying thinking recovery for Gemini")
-        return close_tool_loop_for_thinking(messages, "gemini")
+    # For tool loops, check if we should apply recovery
+    if state.in_tool_loop:
+        # Check if upstream provides signatures at all
+        using_placeholder_sigs = _check_if_using_placeholder_signatures(messages)
 
-    if is_claude:
-        # Claude needs recovery for cross-model or unsigned blocks
-        needs_claude_recovery = has_gemini_history(messages) or has_unsigned_thinking_blocks(messages)
-        if needs_claude_recovery:
-            log.debug("[ThinkingRecovery] Applying thinking recovery for Claude")
-            return close_tool_loop_for_thinking(messages, "claude")
+        if using_placeholder_sigs:
+            # Upstream doesn't provide signatures - this is normal operation
+            # Don't inject [Continue] as it confuses the model
+            log.info(f"[ThinkingRecovery] SKIPPING tool loop recovery - upstream doesn't provide signatures ({state.tool_result_count} tool results)")
+            return messages
+
+        # Signatures should exist but are missing/corrupted - apply recovery
+        if not state.turn_has_thinking:
+            log.info("[ThinkingRecovery] Applying recovery for tool loop with missing thinking")
+            return close_tool_loop_for_thinking(messages, _get_target_family(model_name))
 
     return messages
+
+
+def _get_target_family(model_name: str) -> Optional[str]:
+    """Get target model family from model name."""
+    model_lower = model_name.lower()
+    if "gemini" in model_lower:
+        return "gemini"
+    if "claude" in model_lower:
+        return "claude"
+    return None
+
+
+def _check_if_using_placeholder_signatures(messages: List[Dict[str, Any]]) -> bool:
+    """
+    Check if conversation is using placeholder signatures.
+
+    When upstream API doesn't provide thoughtSignature, we use
+    'skip_thought_signature_validator' as placeholder. If we detect this,
+    we should skip thinking recovery to avoid injecting confusing synthetic
+    messages that cause repetitive behavior.
+
+    Detection methods:
+    1. Check for placeholder in tool_use ID (if Claude Code preserved it)
+    2. Check for placeholder in functionCall thoughtSignature
+    3. Check for tool_use blocks without ANY signature (upstream never provided one)
+
+    Args:
+        messages: List of messages
+
+    Returns:
+        True if placeholder signatures detected or signatures are missing
+    """
+    tool_use_count = 0
+    tool_use_with_signature = 0
+
+    for msg in messages:
+        role = msg.get("role", "")
+        if role not in ("assistant", "model"):
+            continue
+
+        content = msg.get("content") or msg.get("parts") or []
+        if not isinstance(content, list):
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            # Check for tool_use blocks
+            if block.get("type") == "tool_use":
+                tool_use_count += 1
+                tool_id = block.get("id", "")
+
+                # Method 1: Check for encoded placeholder in ID
+                if "__thought__skip_thought_signature_validator" in str(tool_id):
+                    log.debug("[ThinkingRecovery] Detected placeholder in tool_use ID")
+                    return True
+
+                # Method 3: Check if tool_use has thoughtSignature field
+                if block.get("thoughtSignature"):
+                    tool_use_with_signature += 1
+
+            # Check for functionCall with placeholder
+            if "functionCall" in block:
+                sig = block.get("thoughtSignature", "")
+                if sig == "skip_thought_signature_validator":
+                    log.debug("[ThinkingRecovery] Detected placeholder in functionCall")
+                    return True
+                if sig and len(sig) >= 50:  # Valid signature
+                    tool_use_with_signature += 1
+                tool_use_count += 1
+
+    # Method 3: If we have tool_use blocks but NONE have signatures,
+    # upstream isn't providing them, so skip recovery
+    if tool_use_count > 0 and tool_use_with_signature == 0:
+        log.info(f"[ThinkingRecovery] No signatures found in {tool_use_count} tool_use blocks - upstream not providing signatures")
+        return True
+
+    return False

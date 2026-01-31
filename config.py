@@ -36,22 +36,12 @@ ENV_MAPPINGS = {
     "RETRY_429_ENABLED": "retry_429_enabled",
     "RETRY_429_INTERVAL": "retry_429_interval",
     "ANTI_TRUNCATION_MAX_ATTEMPTS": "anti_truncation_max_attempts",
-    "TOOL_RESULT_MAX_CHARS": "tool_result_max_chars",
-    "TOOL_RESULT_COMPRESSION_ENABLED": "tool_result_compression_enabled",
     "ENTITLEMENT_403_MODEL_COOLDOWN_SECONDS": "entitlement_403_model_cooldown_seconds",
     "LONG_QUOTA_COOLDOWN_ROTATE_THRESHOLD_SECONDS": "long_quota_cooldown_rotate_threshold_seconds",
     "RETRY_ROTATE_DELAY_MS": "retry_rotate_delay_ms",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
-
-    # Context compression (checkpoint + fork)
-    "CONTEXT_COMPRESSION_ENABLED": "context_compression_enabled",
-    "CONTEXT_COMPRESSION_TRIGGER_INPUT_TOKENS": "context_compression_trigger_input_tokens",
-    "CONTEXT_COMPRESSION_KEEP_LAST_MESSAGES": "context_compression_keep_last_messages",
-    "CONTEXT_COMPRESSION_SUMMARY_MODEL": "context_compression_summary_model",
-    "CONTEXT_COMPRESSION_SUMMARY_MAX_OUTPUT_TOKENS": "context_compression_summary_max_output_tokens",
-    "CONTEXT_COMPRESSION_FORCE_ON_PROMPT_TOO_LONG": "context_compression_force_on_prompt_too_long",
 
     # Realtime quota refresh (429 w/out explicit retry time)
     "REALTIME_QUOTA_REFRESH_ENABLED": "realtime_quota_refresh_enabled",
@@ -111,19 +101,9 @@ async def build_effective_config_for_panel() -> tuple[dict[str, Any], set[str]]:
     current_config["retry_429_enabled"] = await get_retry_429_enabled()
     current_config["retry_429_interval"] = await get_retry_429_interval()
     current_config["anti_truncation_max_attempts"] = await get_anti_truncation_max_attempts()
-    current_config["tool_result_max_chars"] = await get_tool_result_max_chars()
-    current_config["tool_result_compression_enabled"] = await get_tool_result_compression_enabled()
     current_config["compatibility_mode_enabled"] = await get_compatibility_mode_enabled()
     current_config["return_thoughts_to_frontend"] = await get_return_thoughts_to_frontend()
     current_config["antigravity_stream2nostream"] = await get_antigravity_stream2nostream()
-
-    # Context compression
-    current_config["context_compression_enabled"] = await get_context_compression_enabled()
-    current_config["context_compression_trigger_input_tokens"] = await get_context_compression_trigger_input_tokens()
-    current_config["context_compression_keep_last_messages"] = await get_context_compression_keep_last_messages()
-    current_config["context_compression_summary_model"] = await get_context_compression_summary_model()
-    current_config["context_compression_summary_max_output_tokens"] = await get_context_compression_summary_max_output_tokens()
-    current_config["context_compression_force_on_prompt_too_long"] = await get_context_compression_force_on_prompt_too_long()
 
     # Realtime quota refresh
     current_config["realtime_quota_refresh_enabled"] = await get_realtime_quota_refresh_enabled()
@@ -306,39 +286,6 @@ async def get_anti_truncation_max_attempts() -> int:
             pass
 
     return int(await get_config_value("anti_truncation_max_attempts", 3))
-
-
-async def get_tool_result_max_chars() -> int:
-    """
-    Get maximum characters for tool result compression.
-
-    Environment variable: TOOL_RESULT_MAX_CHARS
-    Database config key: tool_result_max_chars
-    Default: 200000 (200K chars, matching Antigravity Manager)
-    """
-    env_value = os.getenv("TOOL_RESULT_MAX_CHARS")
-    if env_value:
-        try:
-            return int(env_value)
-        except ValueError:
-            pass
-
-    return int(await get_config_value("tool_result_max_chars", 200000))
-
-
-async def get_tool_result_compression_enabled() -> bool:
-    """
-    Get tool result compression enabled setting.
-
-    Environment variable: TOOL_RESULT_COMPRESSION_ENABLED
-    Database config key: tool_result_compression_enabled
-    Default: True
-    """
-    env_value = os.getenv("TOOL_RESULT_COMPRESSION_ENABLED")
-    if env_value:
-        return env_value.lower() in ("true", "1", "yes", "on")
-
-    return bool(await get_config_value("tool_result_compression_enabled", True))
 
 
 async def get_entitlement_403_model_cooldown_seconds() -> int:
@@ -554,64 +501,6 @@ async def get_antigravity_stream2nostream() -> bool:
         return env_value.lower() in ("true", "1", "yes", "on")
 
     return bool(await get_config_value("antigravity_stream2nostream", True))
-
-
-async def get_context_compression_enabled() -> bool:
-    """Enable checkpoint-based context compression."""
-    env_value = os.getenv("CONTEXT_COMPRESSION_ENABLED")
-    if env_value:
-        return env_value.lower() in ("true", "1", "yes", "on")
-    return bool(await get_config_value("context_compression_enabled", True))
-
-
-async def get_context_compression_trigger_input_tokens() -> int:
-    """Trigger checkpoint when estimated input tokens exceed this value."""
-    env_value = os.getenv("CONTEXT_COMPRESSION_TRIGGER_INPUT_TOKENS")
-    if env_value:
-        try:
-            return int(env_value)
-        except ValueError:
-            pass
-    return int(await get_config_value("context_compression_trigger_input_tokens", 140000))
-
-
-async def get_context_compression_keep_last_messages() -> int:
-    """How many tail messages to keep after checkpointing."""
-    env_value = os.getenv("CONTEXT_COMPRESSION_KEEP_LAST_MESSAGES")
-    if env_value:
-        try:
-            return int(env_value)
-        except ValueError:
-            pass
-    return int(await get_config_value("context_compression_keep_last_messages", 4))
-
-
-async def get_context_compression_summary_model() -> str:
-    """Model used to generate the checkpoint summary."""
-    return str(
-        await get_config_value(
-            "context_compression_summary_model", "gemini-3-flash", "CONTEXT_COMPRESSION_SUMMARY_MODEL"
-        )
-    )
-
-
-async def get_context_compression_summary_max_output_tokens() -> int:
-    """Max output tokens for the checkpoint summary generation call."""
-    env_value = os.getenv("CONTEXT_COMPRESSION_SUMMARY_MAX_OUTPUT_TOKENS")
-    if env_value:
-        try:
-            return int(env_value)
-        except ValueError:
-            pass
-    return int(await get_config_value("context_compression_summary_max_output_tokens", 8000))
-
-
-async def get_context_compression_force_on_prompt_too_long() -> bool:
-    """If enabled, retry once with checkpoint when upstream says prompt too long."""
-    env_value = os.getenv("CONTEXT_COMPRESSION_FORCE_ON_PROMPT_TOO_LONG")
-    if env_value:
-        return env_value.lower() in ("true", "1", "yes", "on")
-    return bool(await get_config_value("context_compression_force_on_prompt_too_long", True))
 
 
 async def get_realtime_quota_refresh_enabled() -> bool:

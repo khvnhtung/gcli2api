@@ -1956,68 +1956,6 @@
                         </div>
 
                         <div class="config-group">
-                            <h4>工具结果压缩</h4>
-
-                            <div class="form-group">
-                                <label>
-                                    <input type="checkbox" id="toolResultCompressionEnabled" class="config-checkbox" />
-                                    启用工具结果压缩
-                                </label>
-                                <small class="config-note">对 tool_result / webfetch / snapshot 等超大输出做清理和截断，避免上下文爆炸</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="toolResultMaxChars">工具结果最大字符数:</label>
-                                <input type="number" id="toolResultMaxChars" class="config-input" min="1000" max="2000000" />
-                                <small class="config-note">默认 200000；越小越省上下文，但可能丢细节</small>
-                            </div>
-                        </div>
-
-                        <div class="config-group">
-                            <h4>上下文压缩（Checkpoint）</h4>
-
-                            <div class="form-group">
-                                <label>
-                                    <input type="checkbox" id="contextCompressionEnabled" class="config-checkbox" />
-                                    启用自动Checkpoint
-                                </label>
-                                <small class="config-note">当历史过长时，自动用 gemini-3-flash 生成状态快照并压缩历史</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="contextCompressionTriggerInputTokens">触发阈值（估算输入tokens）:</label>
-                                <input type="number" id="contextCompressionTriggerInputTokens" class="config-input" min="10000" max="5000000" />
-                                <small class="config-note">默认 140000；越小越激进，越大越保守</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="contextCompressionKeepLastMessages">压缩后保留尾部消息数:</label>
-                                <input type="number" id="contextCompressionKeepLastMessages" class="config-input" min="0" max="100" />
-                                <small class="config-note">默认 4；用于保留最近对话和工具回合，降低断链风险</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="contextCompressionSummaryModel">摘要模型:</label>
-                                <input type="text" id="contextCompressionSummaryModel" class="config-input" placeholder="gemini-3-flash" />
-                                <small class="config-note">默认 gemini-3-flash</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="contextCompressionSummaryMaxOutputTokens">摘要最大输出tokens:</label>
-                                <input type="number" id="contextCompressionSummaryMaxOutputTokens" class="config-input" min="256" max="64000" />
-                                <small class="config-note">默认 8000；越大越详细，越小越省配额</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label>
-                                    <input type="checkbox" id="contextCompressionForceOnPromptTooLong" class="config-checkbox" />
-                                    遇到Prompt超长自动重试一次
-                                </label>
-                                <small class="config-note">上游返回"too long / exceeds"时，自动checkpoint并重试一次（仅非流式）</small>
-                            </div>
-                        </div>
-
-                        <div class="config-group">
                             <h4>实时配额刷新（429 精准等待）</h4>
 
                             <div class="form-group">
