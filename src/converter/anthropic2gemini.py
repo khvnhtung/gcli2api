@@ -1015,6 +1015,8 @@ def convert_messages_to_contents(
 def reorganize_tool_messages(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     重新组织消息，满足 tool_use/tool_result 约束。
+    将连续的 functionCall 和对应的 functionResponse 批量处理，
+    确保并发工具调用的响应在单个 contents 条目中。
     """
     tool_results: Dict[str, Dict[str, Any]] = {}
 
@@ -1042,13 +1044,29 @@ def reorganize_tool_messages(contents: List[Dict[str, Any]]) -> List[Dict[str, A
             continue
 
         if isinstance(part, dict) and "functionCall" in part:
-            tool_id = (part.get("functionCall") or {}).get("id")
-            new_contents.append({"role": "model", "parts": [part]})
+            # 收集连续的 functionCall parts
+            function_call_parts = []
+            function_response_parts = []
 
-            if tool_id is not None and str(tool_id) in tool_results:
-                new_contents.append({"role": "user", "parts": [tool_results[str(tool_id)]]})
+            while i < len(flattened):
+                current_part = flattened[i]["parts"][0]
+                if isinstance(current_part, dict) and "functionCall" in current_part:
+                    function_call_parts.append(current_part)
+                    tool_id = (current_part.get("functionCall") or {}).get("id")
+                    if tool_id is not None and str(tool_id) in tool_results:
+                        function_response_parts.append(tool_results[str(tool_id)])
+                    i += 1
+                else:
+                    break
 
-            i += 1
+            # 添加所有 functionCall 到一个 model 消息
+            if function_call_parts:
+                new_contents.append({"role": "model", "parts": function_call_parts})
+
+            # 添加所有 functionResponse 到一个 user 消息
+            if function_response_parts:
+                new_contents.append({"role": "user", "parts": function_response_parts})
+
             continue
 
         new_contents.append(msg)

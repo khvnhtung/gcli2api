@@ -14,7 +14,6 @@ from src.converter.thoughtSignature_fix import (
     encode_tool_id_with_signature,
     decode_tool_id_and_signature,
 )
-from src.converter.tool_result_compressor import compact_tool_result
 from src.converter.utils import merge_system_messages
 
 from log import log
@@ -740,10 +739,7 @@ def convert_tool_message_to_function_response(message, all_messages: List = None
         name = "unknown_function"
         log.warning(f"Tool message missing function name, using default: {name}")
 
-    # Apply compression to raw content first
     raw_content = message.content
-    if isinstance(raw_content, str):
-        raw_content = compact_tool_result(raw_content)
 
     try:
         # 尝试将 content 解析为 JSON
@@ -970,11 +966,24 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
                 if func_name:
                     tool_schemas[func_name] = function.get("parameters", {})
 
+    # 用于累积连续的 tool message 的 functionResponse parts
+    pending_tool_parts = []
+
+    def flush_pending_tool_parts():
+        """将累积的 tool parts 作为单个 contents 条目追加"""
+        nonlocal pending_tool_parts
+        if pending_tool_parts:
+            contents.append({
+                "role": "user",
+                "parts": pending_tool_parts
+            })
+            pending_tool_parts = []
+
     for message in messages:
         role = message.get("role", "user")
         content = message.get("content", "")
 
-        # 处理工具消息（tool role）
+        # 处理工具消息（tool role）- 累积到 pending_tool_parts
         if role == "tool":
             tool_call_id = message.get("tool_call_id", "")
             func_name = message.get("name")
@@ -1012,18 +1021,18 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
             if not isinstance(response_data, dict):
                 response_data = {"result": response_data}
 
-            # 使用原始 ID（不带签名）
-            contents.append({
-                "role": "user",
-                "parts": [{
-                    "functionResponse": {
-                        "id": original_id,
-                        "name": func_name,
-                        "response": response_data
-                    }
-                }]
+            # 累积 functionResponse part（不立即追加到 contents）
+            pending_tool_parts.append({
+                "functionResponse": {
+                    "id": original_id,
+                    "name": func_name,
+                    "response": response_data
+                }
             })
             continue
+
+        # 遇到非 tool 消息时，先 flush 累积的 tool parts
+        flush_pending_tool_parts()
 
         # system 消息已经由 merge_system_messages 处理，这里跳过
         if role == "system":
@@ -1109,6 +1118,9 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
                 contents.append({"role": role, "parts": parts})
         elif content:
             contents.append({"role": role, "parts": [{"text": content}]})
+
+    # 循环结束后，flush 剩余的 tool parts（如果消息列表以 tool 消息结尾）
+    flush_pending_tool_parts()
 
     # 构建生成配置
     generation_config = {}
