@@ -133,6 +133,31 @@ async def stream_request(
     """
     model_name = body.get("model", "")
 
+    def _is_safety_settings_error(text: str) -> bool:
+        t = (text or "").lower()
+        return ("safety_settings" in t) and ("element predicate failed" in t)
+
+    def _next_fallback_model(current: str) -> Optional[str]:
+        # Defensive fallback chain for flash-tier models.
+        # We see some models reject certain safety_settings; fall back progressively.
+        chain = [
+            "gemini-2.5-flash",
+            "gemini-3-flash-low",
+            "gemini-3-flash-high",
+        ]
+
+        # Normalize a couple of equivalent/legacy names into the chain.
+        if current == "gemini-2.5-flash-lite":
+            current = "gemini-2.5-flash"
+
+        try:
+            idx = chain.index(current)
+        except ValueError:
+            return None
+        if idx + 1 >= len(chain):
+            return None
+        return chain[idx + 1]
+
     # Track tried credentials for this request to avoid repeatedly hitting
     # the same rate-limited/denied account when retrying.
     tried_files: set[str] = set()
@@ -164,6 +189,7 @@ async def stream_request(
 
     current_file, credential_data = cred_result
     tried_files.add(str(current_file))
+    log.debug(f"[ANTIGRAVITY STREAM] Selected credential={current_file} for model_key={model_name}")
     access_token = credential_data.get("access_token") or credential_data.get("token")
     project_id = credential_data.get("project_id", "")
 
@@ -200,6 +226,7 @@ async def stream_request(
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
+    last_error_body = ""  # 记录最后一次的错误内容 (用于智能重试策略)
     next_cred_task = None  # 预热的下一个凭证任务
     project_fix_attempted: set[str] = set()
 
@@ -213,6 +240,7 @@ async def stream_request(
             return None
         current_file, credential_data = cred_result
         tried_files.add(str(current_file))
+        log.debug(f"[ANTIGRAVITY STREAM] Rotated credential={current_file} for model_key={model_name}")
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token:
@@ -247,8 +275,87 @@ async def stream_request(
                     except Exception:
                         error_body = ""
 
+                    # 保存错误内容用于智能重试策略
+                    last_error_body = error_body or ""
+
+                    # Defensive model fallback (mainly for Haiku→Flash routing)
+                    # If upstream rejects our request due to safety_settings validation,
+                    # retry once with a more compatible flash model.
+                    if status_code == 400 and _is_safety_settings_error(error_body or ""):
+                        next_model = _next_fallback_model(str(model_name))
+                        if next_model:
+                            log.warning(
+                                f"[ANTIGRAVITY STREAM] safety_settings rejected for model={model_name}; "
+                                f"falling back to model={next_model}"
+                            )
+
+                            # Switch model and re-select a credential for the new model_key.
+                            model_name = next_model
+                            final_payload["model"] = model_name
+
+                            # Reset try history so the new model can use the full pool.
+                            tried_files.clear()
+                            project_fix_attempted.clear()
+                            next_cred_task = None
+
+                            cred_result2 = await credential_manager.get_valid_credential(
+                                mode="antigravity", model_key=model_name
+                            )
+                            if not cred_result2 and await get_pool_wait_enabled():
+                                try:
+                                    cred_result2 = await credential_manager.wait_for_valid_credential(
+                                        mode="antigravity",
+                                        model_key=model_name,
+                                        exclude_filenames=None,
+                                        max_wait_seconds=await get_pool_wait_max_seconds(),
+                                        poll_seconds=await get_pool_wait_poll_seconds(),
+                                    )
+                                except Exception as e:
+                                    log.warning(f"[ANTIGRAVITY STREAM] Pool wait failed (fallback): {e}")
+
+                            if not cred_result2:
+                                snapshot = await credential_manager.get_model_availability_snapshot(
+                                    mode="antigravity", model_key=model_name, exclude_filenames=None
+                                )
+                                log.error(f"[ANTIGRAVITY STREAM] 当前无可用凭证 (fallback): {snapshot}")
+                                yield _build_no_credentials_response(snapshot)
+                                return
+
+                            current_file, credential_data = cred_result2
+                            tried_files.add(str(current_file))
+                            log.debug(
+                                f"[ANTIGRAVITY STREAM] Selected credential={current_file} for model_key={model_name}"
+                            )
+
+                            access_token = credential_data.get("access_token") or credential_data.get("token")
+                            project_id = credential_data.get("project_id", "")
+                            if not access_token:
+                                log.error(
+                                    f"[ANTIGRAVITY STREAM] No access token in credential (fallback): {current_file}"
+                                )
+                                yield Response(
+                                    content=json.dumps({"error": "凭证中没有访问令牌"}),
+                                    status_code=500,
+                                    media_type="application/json",
+                                )
+                                return
+
+                            auth_headers = build_antigravity_headers(access_token, model_name)
+                            if headers:
+                                auth_headers.update(headers)
+                            final_payload["project"] = project_id
+
+                            need_retry = True
+                            # Use a non-rotating status so the retry loop keeps the newly selected credential.
+                            last_status_code_for_retry = 503
+                            break
+
                     # 使用新的重试策略判断是否应该重试
-                    strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_body or "")
+                    strategy, base_ms, max_ms, reason = determine_retry_strategy(
+                        status_code, error_body or "",
+                        credential_id=str(current_file),
+                        model=str(model_name),
+                    )
 
                     retry_after_header = None
                     try:
@@ -348,7 +455,7 @@ async def stream_request(
                         )
 
                         # 并行预热下一个凭证 (仅在需要轮换账号时)
-                        if should_rotate_account(status_code):
+                        if should_rotate_account(status_code, error_body or ""):
                             if next_cred_task is None and attempt < max_retries:
                                 next_cred_task = asyncio.create_task(
                                     credential_manager.get_valid_credential(
@@ -476,7 +583,7 @@ async def stream_request(
                 # lead to "no available credentials" due to exclude_filenames.
                 if (
                     last_status_code_for_retry is not None
-                    and not should_rotate_account(int(last_status_code_for_retry))
+                    and not should_rotate_account(int(last_status_code_for_retry), last_error_body)
                 ):
                     log.info(
                         f"[ANTIGRAVITY STREAM] Keeping same credential for status={last_status_code_for_retry}"
@@ -609,6 +716,7 @@ async def non_stream_request(
 
     current_file, credential_data = cred_result
     tried_files.add(str(current_file))
+    log.debug(f"[ANTIGRAVITY] Selected credential={current_file} for model_key={model_name}")
     access_token = credential_data.get("access_token") or credential_data.get("token")
     project_id = credential_data.get("project_id", "")
 
@@ -657,6 +765,7 @@ async def non_stream_request(
             return None
         current_file, credential_data = cred_result
         tried_files.add(str(current_file))
+        log.debug(f"[ANTIGRAVITY] Rotated credential={current_file} for model_key={model_name}")
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token:
@@ -734,7 +843,11 @@ async def non_stream_request(
                     retry_after_header = None
 
                 # 使用新的重试策略判断是否应该重试
-                strategy, base_ms, max_ms = determine_retry_strategy(status_code, error_text or "")
+                strategy, base_ms, max_ms, reason = determine_retry_strategy(
+                    status_code, error_text or "",
+                    credential_id=str(current_file),
+                    model=str(model_name),
+                )
 
                 # Special handling: entitlement/project permission errors should not spam the pool.
                 extra_cooldown_until = None
@@ -835,7 +948,7 @@ async def non_stream_request(
                     )
 
                     # 并行预热下一个凭证 (仅在需要轮换账号时)
-                    if should_rotate_account(status_code):
+                    if should_rotate_account(status_code, error_text or ""):
                         if next_cred_task is None and attempt < max_retries:
                             next_cred_task = asyncio.create_task(
                                 credential_manager.get_valid_credential(
@@ -914,7 +1027,7 @@ async def non_stream_request(
             if need_retry:
                 log.info(f"[ANTIGRAVITY] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
 
-                if not should_rotate_account(int(status_code)):
+                if not should_rotate_account(int(status_code), error_text or ""):
                     log.info(f"[ANTIGRAVITY] Keeping same credential for status={status_code}")
                     continue
 
