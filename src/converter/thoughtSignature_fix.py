@@ -23,6 +23,25 @@ SIGNATURE_CACHE_TTL_MS = 30 * 60 * 1000  # 30 minutes
 MIN_SIGNATURE_LENGTH = 10  # Minimum valid signature length
 
 
+def get_model_family(model_name: str) -> str:
+    """
+    Determine model family from model name.
+
+    Args:
+        model_name: Model name (e.g., "gemini-2.5-flash", "claude-sonnet-4-5")
+
+    Returns:
+        'claude' or 'gemini'
+    """
+    if not model_name:
+        return "gemini"  # Default for Antigravity models
+
+    lower = model_name.lower()
+    if "claude" in lower:
+        return "claude"
+    return "gemini"
+
+
 def encode_tool_id_with_signature(tool_id: str, signature: Optional[str]) -> str:
     """
     将 thoughtSignature 编码到工具调用ID中，以便往返保留。

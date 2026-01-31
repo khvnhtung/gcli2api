@@ -24,6 +24,10 @@ from src.converter.thoughtSignature_fix import (
     MIN_SIGNATURE_LENGTH,
 )
 
+from src.converter.thinking_recovery import (
+    apply_thinking_recovery_if_needed,
+)
+
 DEFAULT_TEMPERATURE = 0.4
 _DEBUG_TRUE = {"1", "true", "yes", "on"}
 
@@ -1215,6 +1219,13 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
     # [CRITICAL FIX] 重排序 assistant 消息内容
     # 确保 thinking 块在前，text 在中间，tool_use 在后
     reorder_messages_content(messages)
+
+    # [CRITICAL FIX] 应用 Thinking 恢复（如果需要）
+    # 处理中断的工具调用、工具循环、跨模型签名不兼容等情况
+    model_name = payload.get("model", "")
+    thinking_config = payload.get("thinking", {})
+    thinking_enabled = thinking_config.get("type") == "enabled" if isinstance(thinking_config, dict) else False
+    messages = apply_thinking_recovery_if_needed(messages, model_name, thinking_enabled)
 
     # [CRITICAL FIX] 过滤并修复 Thinking 块签名
     # 在转换前先过滤无效的 thinking 块
