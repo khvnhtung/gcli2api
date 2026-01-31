@@ -53,9 +53,6 @@ from src.task_manager import create_managed_task
 
 # 本地模块 - Token估算
 from src.token_estimator import estimate_input_tokens
-
-from src.context_compression import maybe_apply_checkpoint_to_gemini_request
-from src.converter.tool_result_compressor import compact_tool_result
 from src.credential_manager import credential_manager
 
 
@@ -103,7 +100,7 @@ async def messages(
     real_model = get_base_model_from_feature_model(claude_request.model)
 
     # Apply model alias mapping (e.g., gemini-3-pro → gemini-3-pro-high)
-    real_model = apply_model_alias(real_model)
+    real_model = apply_model_alias(real_model, mode="antigravity")
 
     # 获取流式标志
     is_streaming = claude_request.stream
@@ -166,84 +163,11 @@ async def messages(
     from src.converter.gemini_fix import normalize_gemini_request
     gemini_dict = await normalize_gemini_request(gemini_dict, mode="antigravity")
 
-    # ========== Tool result compression (config-driven) ==========
-    try:
-        from config import get_tool_result_compression_enabled, get_tool_result_max_chars
-
-        if await get_tool_result_compression_enabled():
-            max_chars = int(await get_tool_result_max_chars())
-            contents = gemini_dict.get("contents")
-            if isinstance(contents, list) and max_chars > 0:
-                for content in contents:
-                    if not isinstance(content, dict):
-                        continue
-                    parts = content.get("parts")
-                    if not isinstance(parts, list):
-                        continue
-                    for part in parts:
-                        if not isinstance(part, dict):
-                            continue
-                        fr = part.get("functionResponse")
-                        if not isinstance(fr, dict):
-                            continue
-                        resp = fr.get("response")
-                        if not isinstance(resp, dict):
-                            continue
-                        out = resp.get("output")
-                        if isinstance(out, str) and len(out) > max_chars:
-                            resp["output"] = compact_tool_result(out, max_chars=max_chars)
-    except Exception as e:
-        log.warning(f"[ToolCompressor] Failed to apply tool_result compression: {e}")
-
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
-
-    # ========== Context Checkpoint Compression (Anthropic -> Antigravity) ==========
-    checkpoint_applied = False
-    try:
-        from config import (
-            get_context_compression_enabled,
-            get_context_compression_trigger_input_tokens,
-            get_context_compression_keep_last_messages,
-            get_context_compression_summary_model,
-            get_context_compression_summary_max_output_tokens,
-            get_tool_result_max_chars,
-        )
-
-        enabled = await get_context_compression_enabled()
-        if enabled:
-            est_tokens = 0
-            try:
-                est_tokens = estimate_input_tokens(api_request)
-            except Exception:
-                est_tokens = 0
-
-            trigger_tokens = await get_context_compression_trigger_input_tokens()
-            keep_last = await get_context_compression_keep_last_messages()
-            summary_model = await get_context_compression_summary_model()
-            summary_max_out = await get_context_compression_summary_max_output_tokens()
-
-            tool_result_max_chars = int(await get_tool_result_max_chars())
-            tool_result_max_chars_for_summary = min(tool_result_max_chars, 20000)
-
-            new_req, checkpoint_applied = await maybe_apply_checkpoint_to_gemini_request(
-                gemini_request=api_request["request"],
-                anthropic_request=normalized_dict,
-                estimated_input_tokens=int(est_tokens),
-                enabled=True,
-                trigger_input_tokens=int(trigger_tokens),
-                keep_last_messages=int(keep_last),
-                summary_model=str(summary_model),
-                summary_max_output_tokens=int(summary_max_out),
-                tool_result_max_chars_for_summary=int(tool_result_max_chars_for_summary),
-            )
-            if checkpoint_applied:
-                api_request["request"] = new_req
-    except Exception as e:
-        log.warning(f"[CTX-COMPRESS] Preflight checkpoint failed: {e}")
 
     # ========== 非流式请求 ==========
     if not is_streaming:
@@ -261,59 +185,6 @@ async def messages(
         except Exception as e:
             log.error(f"Failed to parse Gemini response: {e}")
             raise HTTPException(status_code=500, detail="Response parsing failed")
-
-        # If prompt is still too long, optionally retry once with forced checkpoint.
-        try:
-            from config import get_context_compression_force_on_prompt_too_long
-            force_retry = await get_context_compression_force_on_prompt_too_long()
-        except Exception:
-            force_retry = False
-
-        if force_retry and (not checkpoint_applied) and status_code in (400, 413):
-            try:
-                # Try to detect "prompt too long" from error body.
-                error_text = response_body if isinstance(response_body, str) else str(response_body)
-                error_l = error_text.lower()
-                if ("too long" in error_l) or ("exceeds" in error_l):
-                    from config import (
-                        get_context_compression_enabled,
-                        get_context_compression_keep_last_messages,
-                        get_context_compression_summary_model,
-                        get_context_compression_summary_max_output_tokens,
-                        get_context_compression_trigger_input_tokens,
-                        get_tool_result_max_chars,
-                    )
-
-                    if await get_context_compression_enabled():
-                        trigger_tokens = await get_context_compression_trigger_input_tokens()
-                        tool_result_max_chars = int(await get_tool_result_max_chars())
-                        tool_result_max_chars_for_summary = min(tool_result_max_chars, 20000)
-
-                        new_req, applied = await maybe_apply_checkpoint_to_gemini_request(
-                            gemini_request=api_request["request"],
-                            anthropic_request=normalized_dict,
-                            estimated_input_tokens=int(trigger_tokens) + 1,
-                            enabled=True,
-                            trigger_input_tokens=int(trigger_tokens),
-                            keep_last_messages=int(await get_context_compression_keep_last_messages()),
-                            summary_model=str(await get_context_compression_summary_model()),
-                            summary_max_output_tokens=int(await get_context_compression_summary_max_output_tokens()),
-                            tool_result_max_chars_for_summary=int(tool_result_max_chars_for_summary),
-                        )
-                        if applied:
-                            api_request["request"] = new_req
-                            checkpoint_applied = True
-                            response = await non_stream_request(body=api_request)
-                            status_code = getattr(response, "status_code", 200)
-                            response_body = _response_body_to_text(response)
-
-                            try:
-                                gemini_response = json.loads(response_body)
-                            except Exception as e:
-                                log.error(f"Failed to parse Gemini response after checkpoint retry: {e}")
-                                raise HTTPException(status_code=500, detail="Response parsing failed")
-            except Exception as e:
-                log.warning(f"[CTX-COMPRESS] Forced checkpoint retry failed: {e}")
 
         # 转换为 Anthropic 格式
         from src.converter.anthropic2gemini import gemini_to_anthropic_response
@@ -457,7 +328,38 @@ async def messages(
         async def stream_request_wrapper(payload):
             # stream_request 返回异步生成器，需要包装成 StreamingResponse
             stream_gen = stream_request(body=payload, native=False)
-            return StreamingResponse(stream_gen, media_type="text/event-stream")
+
+            async def _bytes_only():
+                from fastapi import Response
+
+                async for chunk in stream_gen:
+                    if chunk is None:
+                        continue
+                    if isinstance(chunk, Response):
+                        body = chunk.body
+                        if isinstance(body, memoryview):
+                            body = body.tobytes()
+                        if isinstance(body, (bytes, bytearray)):
+                            yield bytes(body)
+                        else:
+                            yield str(body).encode("utf-8")
+                        return
+                    if isinstance(chunk, str):
+                        yield chunk.encode("utf-8")
+                        continue
+                    if isinstance(chunk, memoryview):
+                        yield chunk.tobytes()
+                        continue
+                    if isinstance(chunk, bytearray):
+                        yield bytes(chunk)
+                        continue
+                    if isinstance(chunk, bytes):
+                        yield chunk
+                        continue
+
+                    yield str(chunk).encode("utf-8")
+
+            return StreamingResponse(_bytes_only(), media_type="text/event-stream")
 
         # 创建反截断处理器
         processor = AntiTruncationStreamProcessor(
@@ -469,10 +371,12 @@ async def messages(
         # 包装以确保是bytes流
         async def bytes_wrapper():
             async for chunk in processor.process_stream():
+                if chunk is None:
+                    continue
                 if isinstance(chunk, str):
-                    yield chunk.encode('utf-8')
-                else:
-                    yield chunk
+                    yield chunk.encode("utf-8")
+                    continue
+                yield chunk
 
         # 直接将整个流传递给转换器
         async for anthropic_chunk in gemini_stream_to_anthropic_stream(
@@ -536,6 +440,8 @@ async def messages(
         # 包装流式生成器以处理错误响应
         async def gemini_chunk_wrapper():
             async for chunk in stream_gen:
+                if chunk is None:
+                    continue
                 # 检查是否是Response对象（错误情况）
                 if isinstance(chunk, Response):
                     # 错误响应，转换为 Anthropic 格式
@@ -624,9 +530,15 @@ async def messages(
                 else:
                     # 确保是bytes类型
                     if isinstance(chunk, str):
-                        yield chunk.encode('utf-8')
-                    else:
+                        yield chunk.encode("utf-8")
+                    elif isinstance(chunk, memoryview):
+                        yield chunk.tobytes()
+                    elif isinstance(chunk, bytearray):
+                        yield bytes(chunk)
+                    elif isinstance(chunk, bytes):
                         yield chunk
+                    else:
+                        yield str(chunk).encode("utf-8")
 
         # 使用转换器处理整个流
         async for anthropic_chunk in gemini_stream_to_anthropic_stream(

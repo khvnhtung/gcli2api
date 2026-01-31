@@ -84,7 +84,7 @@ async def chat_completions(
     real_model = get_base_model_from_feature_model(openai_request.model)
 
     # Apply model alias mapping (e.g., gemini-3-pro → gemini-3-pro-high)
-    real_model = apply_model_alias(real_model)
+    real_model = apply_model_alias(real_model, mode="antigravity")
 
     # 获取流式标志
     is_streaming = openai_request.stream

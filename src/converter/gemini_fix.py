@@ -293,18 +293,28 @@ async def normalize_gemini_request(
                 if "claude" in model.lower():
                     # 检测是否有工具调用（MCP场景）
                     has_tool_calls = any(
-                        isinstance(content, dict) and 
+                        isinstance(content, dict) and
                         any(
                             isinstance(part, dict) and ("functionCall" in part or "function_call" in part)
                             for part in content.get("parts", [])
                         )
                         for content in contents
                     )
-                    
+
                     if has_tool_calls:
-                        # MCP 场景：检测到工具调用，移除 thinkingConfig
-                        log.warning(f"[ANTIGRAVITY] 检测到工具调用（MCP场景），移除 thinkingConfig 避免失效")
-                        generation_config.pop("thinkingConfig", None)
+                        # MCP 场景：保留 thinkingConfig，添加 interleaved thinking hint
+                        # (ported from antigravity-claude-proxy)
+                        log.info(f"[ANTIGRAVITY] 检测到工具调用（MCP场景），添加 interleaved thinking hint")
+                        hint = "Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer."
+                        system_instruction = result.get("systemInstruction", {})
+                        if system_instruction:
+                            parts = system_instruction.get("parts", [])
+                            if parts and isinstance(parts[-1], dict) and "text" in parts[-1]:
+                                parts[-1]["text"] = f"{parts[-1]['text']}\n\n{hint}"
+                            else:
+                                parts.append({"text": hint})
+                        else:
+                            result["systemInstruction"] = {"parts": [{"text": hint}]}
                     else:
                         # 非 MCP 场景：填充思考块
                         # log.warning(f"[ANTIGRAVITY] 最后一个 assistant 消息不以 thinking 块开始，自动填充思考块")

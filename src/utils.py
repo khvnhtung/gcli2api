@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -11,9 +12,11 @@ security = HTTPBearer()
 
 # ====================== OAuth Configuration ======================
 
-GEMINICLI_USER_AGENT = "GeminiCLI/0.1.5 (Windows; AMD64)"
+GEMINICLI_USER_AGENT = os.getenv("GEMINICLI_USER_AGENT", "GeminiCLI/0.1.5 (Windows; AMD64)")
 
-ANTIGRAVITY_USER_AGENT = "antigravity/1.11.3 windows/amd64"
+# Google-side Antigravity endpoints appear to enforce a minimum client version.
+# Make this configurable so users can quickly match whatever the upstream expects.
+ANTIGRAVITY_USER_AGENT = os.getenv("ANTIGRAVITY_USER_AGENT", "antigravity/1.16.0 windows/amd64")
 
 # OAuth Configuration - 标准模式
 CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
@@ -46,22 +49,55 @@ CALLBACK_HOST = "localhost"
 # Model alias mapping: short names → canonical upstream names
 # This allows clients to use simpler names like "gemini-3-pro" which map to
 # the actual upstream model names like "gemini-3-pro-high"
+# Model aliases for GeminiCLI (/v1/) endpoint
+# These map to -preview models with thinking levels
+# GeminiCLI only has Gemini models, so Claude names need mapping
+GEMINICLI_MODEL_ALIASES: dict[str, str] = {
+    # Gemini 3 Pro shortcuts → default to high thinking
+    "gemini-3-pro": "gemini-3-pro-preview-high",
+    "gemini-3-pro-preview": "gemini-3-pro-preview-high",
+    # Gemini 3 Flash shortcuts → default to high thinking
+    "gemini-3-flash": "gemini-3-flash-preview-high",
+    "gemini-3-flash-preview": "gemini-3-flash-preview-high",
+    # Claude model aliases (GeminiCLI doesn't have Claude, map to Gemini)
+    "claude-opus-4-5-thinking": "gemini-3-pro-preview-high",
+    "claude-opus-4-5": "gemini-3-pro-preview-high",
+    "claude-sonnet-4-thinking": "gemini-3-flash-preview-high",
+    "claude-sonnet-4": "gemini-3-flash-preview-high",
+    "claude-haiku-4-5-20251001": "gemini-2.5-flash",
+}
+
+# Model aliases for Antigravity (/antigravity/) endpoint
+# Antigravity uses different model names (no -preview suffix for flash)
+# Note: claude-opus-4-5, claude-sonnet-4-5 etc. work natively on Antigravity
+ANTIGRAVITY_MODEL_ALIASES: dict[str, str] = {
+    # Gemini 3 Pro has -high/-low variants on Antigravity
+    "gemini-3-pro": "gemini-3-pro-high",
+    "gemini-3-pro-preview": "gemini-3-pro-high",
+    # Gemini 3 Flash does NOT have -high/-low on Antigravity, use base name
+    # "gemini-3-flash" stays as "gemini-3-flash"
+    # Defensive mapping: route Haiku to a Gemini flash tier (Haiku not available on Antigravity)
+    "claude-haiku-4-5-20251001": "gemini-2.5-flash",
+}
+
+# Default aliases (used when mode is not specified)
 MODEL_ALIASES: dict[str, str] = {
     # Gemini 3 Pro shortcuts → default to high thinking
     "gemini-3-pro": "gemini-3-pro-high",
     "gemini-3-pro-preview": "gemini-3-pro-preview-high",
     # Gemini 3 Flash shortcuts → default to high thinking
-    "gemini-3-flash": "gemini-3-flash-high",
     "gemini-3-flash-preview": "gemini-3-flash-preview-high",
     # Claude model aliases (for OpenCode compatibility)
     "claude-opus-4-5-thinking": "gemini-3-pro-high",
     "claude-opus-4-5": "gemini-3-pro-high",
-    "claude-sonnet-4-thinking": "gemini-3-flash-high",
-    "claude-sonnet-4": "gemini-3-flash-high",
+    "claude-sonnet-4-thinking": "gemini-3-flash",
+    "claude-sonnet-4": "gemini-3-flash",
+    # Defensive mapping: route Haiku to a Gemini flash tier.
+    "claude-haiku-4-5-20251001": "gemini-2.5-flash",
 }
 
 
-def apply_model_alias(model_name: str) -> str:
+def apply_model_alias(model_name: str, mode: str = "") -> str:
     """
     Apply model alias mapping to convert short/friendly names to canonical upstream names.
 
@@ -69,15 +105,25 @@ def apply_model_alias(model_name: str) -> str:
     1. Preserves feature prefixes (假流式/, 流式抗截断/)
     2. Preserves thinking suffixes (-high, -low, -medium, etc.)
     3. Only maps base model names that have explicit aliases
+    4. Uses mode-specific aliases when mode is specified
 
     Args:
         model_name: The model name from the client request
+        mode: The API mode ("antigravity", "geminicli", or "" for default)
 
     Returns:
         The canonical upstream model name
     """
     if not model_name:
         return model_name
+
+    # Select the appropriate alias map based on mode
+    if mode == "antigravity":
+        alias_map = ANTIGRAVITY_MODEL_ALIASES
+    elif mode == "geminicli":
+        alias_map = GEMINICLI_MODEL_ALIASES
+    else:
+        alias_map = MODEL_ALIASES
 
     # Extract feature prefix if present
     prefix = ""
@@ -89,10 +135,10 @@ def apply_model_alias(model_name: str) -> str:
             break
 
     # Check if the base name (without prefix) has an alias
-    if base_name in MODEL_ALIASES:
-        mapped = MODEL_ALIASES[base_name]
+    if base_name in alias_map:
+        mapped = alias_map[base_name]
         result = f"{prefix}{mapped}" if prefix else mapped
-        log.debug(f"[MODEL ALIAS] Mapped '{model_name}' → '{result}'")
+        log.debug(f"[MODEL ALIAS] Mapped '{model_name}' → '{result}' (mode={mode})")
         return result
 
     # No alias found, return original
