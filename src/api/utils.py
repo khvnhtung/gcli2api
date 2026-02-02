@@ -430,6 +430,10 @@ async def collect_streaming_response(stream_generator) -> Response:
                         else:
                             collected_text.append(text)
                             log.debug(f"[STREAM COLLECTOR] Collected regular text: {text[:100]}")
+                    # 处理函数调用（工具调用）
+                    elif "functionCall" in part:
+                        collected_other_parts.append(part)
+                        log.debug(f"[STREAM COLLECTOR] Collected functionCall: {part.get('functionCall', {}).get('name', 'unknown')}")
                     # 处理非文本内容（图片、文件等）
                     elif "inlineData" in part or "fileData" in part or "executableCode" in part or "codeExecutionResult" in part:
                         collected_other_parts.append(part)

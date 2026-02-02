@@ -23,7 +23,10 @@ from src.converter.thoughtSignature_fix import (
     cache_thinking_signature,
     get_cached_signature_family,
     get_model_family,
+    cache_session_signature,
+    get_session_signature,
     MIN_SIGNATURE_LENGTH,
+    MIN_SESSION_SIGNATURE_LENGTH,
 )
 
 from src.converter.thinking_recovery import (
@@ -787,13 +790,30 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
     注意: 所有函数声明必须合并到单个 functionDeclarations 数组中，
     因为 Gemini API 不支持多个非搜索工具对象在 tools 数组中。
     错误: "Multiple tools are supported only when they are all search tools."
+
+    特殊处理: Anthropic 的 web_search 工具类型会映射到 Gemini 的 googleSearch。
     """
     if not anthropic_tools:
         return None
 
+    log.debug(f"[TOOLS] Converting {len(anthropic_tools)} tools")
+
     # Collect all function declarations into a single array
     function_declarations: List[Dict[str, Any]] = []
+    has_google_search = False
+
     for tool in anthropic_tools:
+        tool_type = tool.get("type", "")
+        tool_name = tool.get("name", "")
+        log.debug(f"[TOOLS] Processing tool: type={tool_type}, name={tool_name}")
+
+        # Anthropic web_search tool → Gemini googleSearch
+        # Anthropic format: {"type": "web_search_20250305", "name": "web_search", ...}
+        if tool_type.startswith("web_search"):
+            has_google_search = True
+            log.info(f"[TOOLS] Mapping Anthropic web_search tool to Gemini googleSearch")
+            continue  # Skip adding to functionDeclarations
+
         name = tool.get("name", "nameless_function")
         description = tool.get("description", "")
         input_schema = tool.get("input_schema", {}) or {}
@@ -807,12 +827,24 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
             }
         )
 
-    if not function_declarations:
+    # Build result tools array
+    result: List[Dict[str, Any]] = []
+
+    # Add googleSearch if web_search was detected
+    if has_google_search:
+        result.append({"googleSearch": {}})
+        log.info(f"[TOOLS] Added googleSearch to tools array")
+
+    # Add function declarations if any
+    if function_declarations:
+        result.append({"functionDeclarations": function_declarations})
+
+    log.debug(f"[TOOLS] Final tools: has_google_search={has_google_search}, function_count={len(function_declarations)}")
+
+    if not result:
         return None
 
-    # Return a single tools object with all declarations consolidated
-    # This avoids "Multiple tools are supported only when they are all search tools" error
-    return [{"functionDeclarations": function_declarations}]
+    return result
 
 
 # ============================================================================
@@ -852,7 +884,8 @@ def _extract_tool_result_output(content: Any, max_chars: Optional[int] = None) -
 def convert_messages_to_contents(
     messages: List[Dict[str, Any]],
     *,
-    include_thinking: bool = True
+    include_thinking: bool = True,
+    session_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     将 Anthropic messages[] 转换为下游 contents[]（role: user/model, parts: []）。
@@ -860,6 +893,7 @@ def convert_messages_to_contents(
     Args:
         messages: Anthropic 格式的消息列表
         include_thinking: 是否包含 thinking 块
+        session_id: Optional session ID for session-level signature fallback
     """
     contents: List[Dict[str, Any]] = []
 
@@ -966,7 +1000,15 @@ def convert_messages_to_contents(
                         cached_sig = get_cached_signature(original_id)
                         if cached_sig:
                             thoughtsignature = cached_sig
-                            log.info(f"[SIGNATURE_TRACE] RESTORED from cache for tool_use_id={original_id[:30]}..., sig_len={len(cached_sig)}")
+                            log.info(f"[SIGNATURE_TRACE] RESTORED from tool cache for tool_use_id={original_id[:30]}..., sig_len={len(cached_sig)}")
+                        elif session_id:
+                            # Fallback to session cache (rewind-safe)
+                            session_sig = get_session_signature(session_id)
+                            if session_sig:
+                                thoughtsignature = session_sig
+                                log.info(f"[SIGNATURE_TRACE] RESTORED from session cache for session={session_id}, sig_len={len(session_sig)}")
+                            else:
+                                log.info(f"[SIGNATURE_TRACE] NO CACHE HIT (tool or session) for tool_use_id={original_id[:30]}...")
                         else:
                             log.info(f"[SIGNATURE_TRACE] NO CACHE HIT for tool_use_id={original_id[:30]}...")
 
@@ -1224,7 +1266,10 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 # 8. 主要转换函数
 # ============================================================================
 
-async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def anthropic_to_gemini_request(
+    payload: Dict[str, Any],
+    session_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     将 Anthropic 格式请求体转换为 Gemini 格式请求体
 
@@ -1233,6 +1278,7 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
 
     Args:
         payload: Anthropic 格式的请求体字典
+        session_id: Optional session ID for session-level signature fallback
 
     Returns:
         Gemini 格式的请求体字典，包含:
@@ -1273,7 +1319,7 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
     generation_config = build_generation_config(payload)
 
     # 转换消息内容（始终包含thinking块，由响应端处理）
-    contents = convert_messages_to_contents(messages, include_thinking=True)
+    contents = convert_messages_to_contents(messages, include_thinking=True, session_id=session_id)
     
     # [CRITICAL FIX] 移除尾部无签名的 thinking 块
     # 对真实请求应用额外的清理
@@ -1315,7 +1361,9 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
 def gemini_to_anthropic_response(
     gemini_response: Dict[str, Any],
     model: str,
-    status_code: int = 200
+    status_code: int = 200,
+    session_id: Optional[str] = None,
+    message_count: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     将 Gemini 格式非流式响应转换为 Anthropic 格式非流式响应
@@ -1326,6 +1374,8 @@ def gemini_to_anthropic_response(
         gemini_response: Gemini 格式的响应体字典
         model: 模型名称
         status_code: HTTP 状态码 (默认 200)
+        session_id: Optional session ID for session-level signature caching
+        message_count: Optional message count for rewind detection
 
     Returns:
         Anthropic 格式的响应体字典，或原始响应 (如果状态码不是 2xx)
@@ -1395,6 +1445,10 @@ def gemini_to_anthropic_response(
             if thoughtsignature and len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
                 cache_signature(original_id, thoughtsignature)
 
+                # Also cache at session level for rewind detection
+                if session_id and message_count and len(thoughtsignature) >= MIN_SESSION_SIGNATURE_LENGTH:
+                    cache_session_signature(session_id, thoughtsignature, message_count)
+
             # 对工具调用ID进行签名编码
             encoded_id = encode_tool_id_with_signature(original_id, thoughtsignature)
             content.append(
@@ -1460,7 +1514,9 @@ def gemini_to_anthropic_response(
 async def gemini_stream_to_anthropic_stream(
     gemini_stream: AsyncIterator[bytes],
     model: str,
-    status_code: int = 200
+    status_code: int = 200,
+    session_id: Optional[str] = None,
+    message_count: Optional[int] = None
 ) -> AsyncIterator[bytes]:
     """
     将 Gemini 格式流式响应转换为 Anthropic SSE 格式流式响应
@@ -1471,6 +1527,8 @@ async def gemini_stream_to_anthropic_stream(
         gemini_stream: Gemini 格式的流式响应 (bytes 迭代器)
         model: 模型名称
         status_code: HTTP 状态码 (默认 200)
+        session_id: Optional session ID for session-level signature caching
+        message_count: Optional message count for rewind detection
 
     Yields:
         Anthropic SSE 格式的响应块 (bytes)
@@ -1706,6 +1764,10 @@ async def gemini_stream_to_anthropic_stream(
                     if thoughtsignature and len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
                         cache_signature(original_id, thoughtsignature)
                         log.info(f"[SIGNATURE_TRACE] CACHING signature for future requests: id={original_id[:30]}...")
+
+                        # Also cache at session level for rewind detection
+                        if session_id and message_count and len(thoughtsignature) >= MIN_SESSION_SIGNATURE_LENGTH:
+                            cache_session_signature(session_id, thoughtsignature, message_count)
                     else:
                         log.warning(f"[SIGNATURE_TRACE] NOT CACHING - no valid signature from upstream: id={original_id[:30]}...")
 

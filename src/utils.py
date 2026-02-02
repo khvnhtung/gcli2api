@@ -72,17 +72,16 @@ def get_antigravity_user_agent() -> str:
     env_override = os.getenv("ANTIGRAVITY_USER_AGENT")
     if env_override:
         return env_override
-    
+
     version = _fetch_antigravity_version()
     # Detect OS and arch
     os_name = platform.system().lower()
     arch = platform.machine().lower()
-    # Normalize arch names
-    if arch in ("x86_64", "amd64"):
-        arch = "amd64"
-    elif arch in ("aarch64", "arm64"):
-        arch = "arm64"
-    
+    # Normalize arch names to match Antigravity-Manager expectations.
+    # In particular, upstream/proxies may reject linux/amd64 and expect linux/x86_64.
+    if arch == "amd64":
+        arch = "x86_64"
+
     return f"antigravity/{version} {os_name}/{arch}"
 
 

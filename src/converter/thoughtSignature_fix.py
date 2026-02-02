@@ -22,6 +22,11 @@ THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 SIGNATURE_CACHE_TTL_MS = 30 * 60 * 1000  # 30 minutes
 MIN_SIGNATURE_LENGTH = 10  # Minimum valid signature length
 
+# Session signature cache configuration (ported from Antigravity-Manager signature_cache.rs:157-219)
+SESSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000  # 2 hours (matches Rust implementation)
+SESSION_CACHE_LIMIT = 1000  # Maximum number of sessions to cache
+MIN_SESSION_SIGNATURE_LENGTH = 50  # Minimum valid session signature length (matches Rust)
+
 
 def get_model_family(model_name: str) -> str:
     """
@@ -104,6 +109,10 @@ _signature_cache: Dict[str, Dict[str, Any]] = {}
 
 # Thinking signature cache: signature -> {"model_family": str, "timestamp": float}
 _thinking_signature_cache: Dict[str, Dict[str, Any]] = {}
+
+# Session signature cache: session_id -> {"signature": str, "message_count": int, "timestamp": float}
+# Ported from Antigravity-Manager signature_cache.rs:157-219
+_session_signature_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def cache_signature(tool_use_id: str, signature: str) -> None:
@@ -240,6 +249,118 @@ def cleanup_expired_signatures() -> int:
         log.debug(f"[SignatureCache] Cleaned up {removed} expired entries")
 
     return removed
+
+
+# ============================================================================
+# Session Signature Cache (ported from Antigravity-Manager signature_cache.rs:157-219)
+# ============================================================================
+#
+# Session-level signature caching with rewind detection.
+# When a user deletes the last few messages and retries (rewind), the proxy
+# might still hold a "future" thought signature in its cache. Sending this
+# signature with a "past" conversation state causes Gemini API errors.
+# ============================================================================
+
+
+def cache_session_signature(session_id: str, signature: str, message_count: int) -> None:
+    """
+    Store the latest thinking signature for a session with rewind detection.
+
+    Rewind Detection Logic (from Rust):
+    - If message_count < existing['message_count']: REWIND detected, force update
+    - If message_count == existing['message_count']: Only update if new signature is longer
+    - If message_count > existing['message_count']: Normal progression, update
+
+    Args:
+        session_id: Session identifier (from extract_session_id)
+        signature: The thoughtSignature to cache
+        message_count: Current message count in the conversation
+    """
+    if not signature or len(signature) < MIN_SESSION_SIGNATURE_LENGTH:
+        return
+
+    now_ms = time.time() * 1000
+    existing = _session_signature_cache.get(session_id)
+
+    should_store = False
+    if existing is None:
+        should_store = True
+    elif now_ms - existing["timestamp"] > SESSION_CACHE_TTL_MS:
+        # Expired
+        should_store = True
+    elif message_count < existing["message_count"]:
+        # REWIND DETECTED: User deleted messages
+        log.warning(
+            f"[SignatureCache] Rewind detected for {session_id}: "
+            f"{existing['message_count']} -> {message_count} messages. Forcing update."
+        )
+        should_store = True
+    elif message_count == existing["message_count"]:
+        # Same count: only update if new signature is longer
+        should_store = len(signature) > len(existing["signature"])
+    else:
+        # Normal progression
+        should_store = True
+
+    if should_store:
+        log.debug(
+            f"[SignatureCache] Session {session_id} (msg_count={message_count}) "
+            f"-> storing signature (len={len(signature)})"
+        )
+        _session_signature_cache[session_id] = {
+            "signature": signature,
+            "message_count": message_count,
+            "timestamp": now_ms,
+        }
+
+    # Cleanup when limit reached
+    if len(_session_signature_cache) > SESSION_CACHE_LIMIT:
+        _cleanup_session_cache()
+
+
+def get_session_signature(session_id: str) -> Optional[str]:
+    """
+    Retrieve the latest thinking signature for a session.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        The cached signature or None if not found/expired
+    """
+    entry = _session_signature_cache.get(session_id)
+    if not entry:
+        log.debug(f"[SignatureCache] Session {session_id} -> MISS")
+        return None
+
+    # Check TTL
+    now_ms = time.time() * 1000
+    if now_ms - entry["timestamp"] > SESSION_CACHE_TTL_MS:
+        del _session_signature_cache[session_id]
+        log.debug(f"[SignatureCache] Session {session_id} -> EXPIRED")
+        return None
+
+    log.debug(f"[SignatureCache] Session {session_id} -> HIT (len={len(entry['signature'])})")
+    return entry["signature"]
+
+
+def _cleanup_session_cache() -> None:
+    """Remove expired entries from session cache."""
+    now_ms = time.time() * 1000
+    expired = [
+        k for k, v in _session_signature_cache.items()
+        if now_ms - v["timestamp"] > SESSION_CACHE_TTL_MS
+    ]
+    for k in expired:
+        del _session_signature_cache[k]
+    if expired:
+        log.info(f"[SignatureCache] Session cache cleanup: removed {len(expired)} expired entries")
+
+
+def clear_session_signature_cache() -> None:
+    """Clear all entries from the session signature cache."""
+    _session_signature_cache.clear()
+    log.debug("[SignatureCache] Cleared session signature cache")
 
 
 # ============================================================================

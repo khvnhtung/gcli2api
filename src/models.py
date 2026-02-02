@@ -222,9 +222,21 @@ class ClaudeMessage(BaseModel):
 
 
 class ClaudeTool(BaseModel):
-    name: str
+    """
+    Anthropic tool definition.
+
+    Standard tools have: name, description, input_schema
+    Server-side tools (like web_search) have: type, name, and tool-specific fields
+    """
+    name: Optional[str] = None
     description: Optional[str] = None
-    input_schema: Dict[str, Any]
+    input_schema: Optional[Dict[str, Any]] = None
+    # Server-side tool fields
+    type: Optional[str] = None  # e.g., "web_search_20250305"
+    max_uses: Optional[int] = None  # for web_search
+
+    class Config:
+        extra = "allow"  # Allow additional fields for future tool types
 
 
 class ClaudeMetadata(BaseModel):
