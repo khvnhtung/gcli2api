@@ -358,3 +358,43 @@ journalctl --user -u gcli2api --no-pager -n 100 | grep "SignatureCache"
 **Cause**: Signatures are model-family specific. Claude signatures invalid for Gemini and vice versa.
 
 **Solution**: `strip_invalid_thinking_blocks()` removes incompatible signatures. Thinking recovery handles the transition.
+
+## Companion Tools
+
+### mcp-gcli2api-search
+
+MCP server for web search via gcli2api's Gemini googleSearch integration.
+
+**Repository**: https://github.com/khvnhtung/mcp-gcli2api-search
+
+**Tools provided**:
+- `web_search`: Search the web using Google Search grounding
+- `fetch_page`: Fetch and summarize content from a URL
+
+**Quick commands**:
+```bash
+# Check service status
+systemctl --user status mcp-gcli2api-search
+
+# Restart service
+systemctl --user restart mcp-gcli2api-search
+
+# View logs
+journalctl --user -u mcp-gcli2api-search -f
+
+# Health check
+curl -s http://localhost:3100/health | jq
+
+# Test search
+curl -s -X POST http://localhost:3100/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_search","arguments":{"query":"test"}}}' | jq
+```
+
+**Configuration** (in `~/.config/systemd/user/mcp-gcli2api-search.service`):
+- `GCLI2API_URL`: gcli2api server URL (default: `http://127.0.0.1:7861`)
+- `GCLI2API_PASSWORD`: API password
+- `SEARCH_MODEL`: Model for search (`gemini-3-flash` or `gemini-3-pro-high`)
+- `THINKING_BUDGET`: Thinking tokens (0=off, 1024-32000)
+
+**Note**: The MCP server forces `gemini-3-flash` if any `2.5` model is specified. This is intentional to deprecate older models.

@@ -940,6 +940,78 @@ export COMPATIBILITY_MODE=true
 
 ---
 
+## 🔍 Companion Tools
+
+### mcp-gcli2api-search
+
+MCP server that provides web search capabilities via gcli2api's Gemini googleSearch integration.
+
+**Repository**: https://github.com/khvnhtung/mcp-gcli2api-search
+
+**Features**:
+- `web_search`: Search the web using Google Search via Gemini grounding
+- `fetch_page`: Fetch and summarize content from a URL
+
+**Installation**:
+```bash
+git clone https://github.com/khvnhtung/mcp-gcli2api-search.git
+cd mcp-gcli2api-search
+npm install
+```
+
+**Usage**:
+```bash
+# Local (stdio mode)
+node index.js
+
+# Remote (HTTP/SSE mode for other machines)
+node index.js --http --port 3100
+```
+
+**Configuration** (environment variables):
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GCLI2API_URL` | `http://127.0.0.1:7861` | gcli2api server URL |
+| `GCLI2API_PASSWORD` | `pwd` | API password |
+| `SEARCH_MODEL` | `gemini-3-flash` | Model for search |
+| `THINKING_BUDGET` | `0` | Thinking tokens (0=off, 1024-32000) |
+
+**Client Configuration**:
+
+Claude Code (`~/.claude/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "gcli2api-search": {
+      "command": "node",
+      "args": ["/path/to/mcp-gcli2api-search/index.js"],
+      "env": {
+        "GCLI2API_URL": "http://127.0.0.1:7861",
+        "GCLI2API_PASSWORD": "pwd"
+      }
+    }
+  }
+}
+```
+
+OpenCode (`opencode.json`):
+```json
+{
+  "mcp": {
+    "gcli2api-search": {
+      "type": "local",
+      "command": ["node", "/path/to/mcp-gcli2api-search/index.js"],
+      "env": {
+        "GCLI2API_URL": "http://127.0.0.1:7861",
+        "GCLI2API_PASSWORD": "pwd"
+      }
+    }
+  }
+}
+```
+
+---
+
 ## 许可证与免责声明
 
 本项目仅供学习和研究用途。使用本项目表示您同意：
