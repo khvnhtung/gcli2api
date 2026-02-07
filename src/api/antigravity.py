@@ -667,7 +667,15 @@ async def stream_request(
             else:
                 # 所有重试都失败，返回最后一次的错误（如果有）
                 log.error(f"[ANTIGRAVITY STREAM] 所有重试均失败，最后异常: {e}")
-                yield last_error_response
+                if last_error_response:
+                    yield last_error_response
+                else:
+                    yield Response(
+                        content=json.dumps({"error": f"流式请求异常: {str(e)}"}),
+                        status_code=500,
+                        media_type="application/json"
+                    )
+                return
 
 
 async def non_stream_request(
@@ -1106,11 +1114,25 @@ async def non_stream_request(
             else:
                 # 所有重试都失败，返回最后一次的错误（如果有）
                 log.error(f"[ANTIGRAVITY] 所有重试均失败，最后异常: {e}")
-                return last_error_response
+                if last_error_response:
+                    return last_error_response
+                else:
+                    return Response(
+                        content=json.dumps({"error": f"非流式请求异常: {str(e)}"}),
+                        status_code=500,
+                        media_type="application/json"
+                    )
 
     # 所有重试都失败，返回最后一次的原始错误
     log.error("[ANTIGRAVITY] 所有重试均失败")
-    return last_error_response
+    if last_error_response:
+        return last_error_response
+    else:
+        return Response(
+            content=json.dumps({"error": "所有重试均失败"}),
+            status_code=500,
+            media_type="application/json"
+        )
 
 
 # ==================== 模型和配额查询 ====================
@@ -1170,14 +1192,25 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
                     )
                     model_list.append(model_to_dict(model))
 
-            # 添加额外的 claude-opus-4-5 模型
-            claude_opus_model = Model(
-                id='claude-opus-4-5',
-                object='model',
-                created=current_timestamp,
-                owned_by='google'
-            )
-            model_list.append(model_to_dict(claude_opus_model))
+            if "claude-opus-4-5-thinking" in data.get('models', {}):
+                # 添加 claude-opus-4-5 模型
+                model = Model(
+                    id='claude-opus-4-5',
+                    object='model',
+                    created=current_timestamp,
+                    owned_by='google'
+                )
+                model_list.append(model_to_dict(model))
+
+            # 添加额外的 claude-opus-4-6 模型
+            if "claude-opus-4-6-thinking" in data.get('models', {}):
+                claude_opus_model = Model(
+                    id='claude-opus-4-6',
+                    object='model',
+                    created=current_timestamp,
+                    owned_by='google'
+                )
+                model_list.append(model_to_dict(claude_opus_model))
 
             log.info(f"[ANTIGRAVITY] Fetched {len(model_list)} available models")
             return model_list
@@ -1206,8 +1239,8 @@ async def fetch_quota_info(access_token: str) -> Dict[str, Any]:
             "models": {
                 "model_name": {
                     "remaining": 0.95,
-                    "resetTime": "12-20 10:30",
-                    "resetTimeRaw": "2025-12-20T02:30:00Z"
+                    "resetTime": "12-20 09:30",      # server-local display string
+                    "resetTimeRaw": "2025-12-20T02:30:00Z"  # authoritative RFC3339 timestamp
                 }
             },
             "error": "错误信息" (仅在失败时)
@@ -1239,22 +1272,21 @@ async def fetch_quota_info(access_token: str) -> Dict[str, Any]:
                         remaining = quota.get('remainingFraction', 0)
                         reset_time_raw = quota.get('resetTime', '')
 
-                        # 转换为北京时间
-                        reset_time_beijing = 'N/A'
+                        # Display reset time in server-local timezone.
+                        # Note: resetTimeRaw is the authoritative RFC3339 timestamp from upstream.
+                        reset_time_local = "N/A"
                         if reset_time_raw:
                             try:
-                                utc_date = datetime.fromisoformat(reset_time_raw.replace('Z', '+00:00'))
-                                # 转换为北京时间 (UTC+8)
-                                from datetime import timedelta
-                                beijing_date = utc_date + timedelta(hours=8)
-                                reset_time_beijing = beijing_date.strftime('%m-%d %H:%M')
+                                utc_date = datetime.fromisoformat(reset_time_raw.replace("Z", "+00:00"))
+                                local_date = utc_date.astimezone()
+                                reset_time_local = local_date.strftime("%m-%d %H:%M")
                             except Exception as e:
                                 log.warning(f"[ANTIGRAVITY QUOTA] Failed to parse reset time: {e}")
 
                         quota_info[model_id] = {
                             "remaining": remaining,
-                            "resetTime": reset_time_beijing,
-                            "resetTimeRaw": reset_time_raw
+                            "resetTime": reset_time_local,
+                            "resetTimeRaw": reset_time_raw,
                         }
 
             return {

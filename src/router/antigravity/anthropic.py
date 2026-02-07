@@ -45,13 +45,6 @@ from src.converter.fake_stream import (
 # 本地模块 - Session管理（rewind detection）
 from src.converter.session_manager import extract_session_id
 
-# 本地模块 - Web Search处理
-from src.converter.web_search_handler import (
-    has_web_search_tool,
-    is_claude_model,
-    handle_web_search_loop,
-)
-
 # 本地模块 - 基础路由工具
 from src.router.hi_check import is_health_check_request, create_health_check_response
 
@@ -73,6 +66,109 @@ def _response_body_to_text(resp: Any) -> str:
     if isinstance(body, (bytes, bytearray)):
         return body.decode("utf-8", errors="ignore")
     return str(body)
+
+
+async def _handle_web_search_request(
+    normalized_dict: dict,
+    real_model: str,
+    is_streaming: bool,
+    session_id: str,
+    message_count: int,
+):
+    """
+    Handle requests that include web_search tool for Claude models.
+
+    Claude models on Antigravity don't support googleSearch natively.
+    We intercept web_search tool calls: Claude decides when to search,
+    and we execute searches via a Gemini model with googleSearch grounding.
+
+    For streaming requests, the search loop runs non-streaming internally,
+    then the final response is converted to fake-stream SSE events.
+    """
+    from src.converter.web_search_handler import handle_web_search_loop
+    from src.converter.anthropic2gemini import (
+        anthropic_to_gemini_request,
+        gemini_to_anthropic_response,
+    )
+    from src.api.antigravity import non_stream_request as antigravity_non_stream
+    from src.api.geminicli import non_stream_request as geminicli_non_stream
+
+    log.info(f"[WEB_SEARCH] Starting web search handler for {real_model}")
+
+    try:
+        anthropic_response = await handle_web_search_loop(
+            original_request=normalized_dict,
+            claude_request_fn=antigravity_non_stream,
+            gemini_request_fn=geminicli_non_stream,
+            convert_request_fn=anthropic_to_gemini_request,
+            convert_response_fn=gemini_to_anthropic_response,
+            model=real_model,
+            session_id=session_id,
+            message_count=message_count,
+        )
+    except Exception as e:
+        log.error(f"[WEB_SEARCH] Handler failed: {e}")
+        error_response = {
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": f"Web search handler failed: {str(e)}",
+            },
+        }
+        if is_streaming:
+            async def error_gen():
+                yield f"data: {json.dumps(error_response)}\n\n".encode()
+                yield "data: [DONE]\n\n".encode()
+            return StreamingResponse(error_gen(), media_type="text/event-stream")
+        return JSONResponse(content=error_response, status_code=500)
+
+    if not is_streaming:
+        status_code = anthropic_response.get("status_code", 200)
+        if isinstance(status_code, str):
+            try:
+                status_code = int(status_code)
+            except ValueError:
+                status_code = 200
+        return JSONResponse(content=anthropic_response, status_code=status_code)
+
+    # Streaming: convert the non-streaming response to fake-stream SSE events
+    async def web_search_stream_generator():
+        from src.converter.fake_stream import (
+            build_anthropic_fake_stream_chunks,
+            create_anthropic_heartbeat_chunk,
+        )
+
+        # Send initial heartbeat
+        heartbeat = create_anthropic_heartbeat_chunk()
+        yield f"data: {json.dumps(heartbeat)}\n\n".encode()
+
+        # Extract content from the Anthropic response
+        content_blocks = anthropic_response.get("content", [])
+        text_content = ""
+        reasoning_content = ""
+
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+            if block_type == "thinking":
+                reasoning_content += block.get("thinking", "")
+            elif block_type == "text":
+                text_content += block.get("text", "")
+
+        finish_reason = anthropic_response.get("stop_reason", "end_turn")
+
+        chunks = build_anthropic_fake_stream_chunks(
+            text_content, reasoning_content, finish_reason, real_model, []
+        )
+        for chunk in chunks:
+            yield f"data: {json.dumps(chunk)}\n\n".encode()
+
+        yield "data: [DONE]\n\n".encode()
+
+    return StreamingResponse(
+        web_search_stream_generator(), media_type="text/event-stream"
+    )
 
 
 # ==================== 路由器初始化 ====================
@@ -168,70 +264,16 @@ async def messages(
     session_id = extract_session_id(messages)
     log.debug(f"[ANTIGRAVITY-ANTHROPIC] Session: {session_id}, message_count: {message_count}")
 
-    # ========== Web Search Interception for Claude Models ==========
-    # If request has web_search tool and is a Claude model, use the web search loop
-    tools = normalized_dict.get("tools", [])
-    if has_web_search_tool(tools) and is_claude_model(real_model):
-        log.info(f"[ANTIGRAVITY-ANTHROPIC] Web search detected for Claude model, using search loop")
-
-        from src.api.antigravity import non_stream_request
-        from src.converter.anthropic2gemini import (
-            anthropic_to_gemini_request,
-            gemini_to_anthropic_response,
+    # ========== Web Search interception for Claude models ==========
+    # Claude models on Antigravity don't support googleSearch natively.
+    # When web_search tool is present, we intercept it: Claude decides when to
+    # search, and we execute searches via a Gemini model with googleSearch.
+    from src.converter.web_search_handler import has_web_search_tool, is_claude_model
+    if has_web_search_tool(normalized_dict.get("tools")) and is_claude_model(real_model):
+        log.info(f"[ANTIGRAVITY-ANTHROPIC] Web search detected for Claude model {real_model}, using search handler")
+        return await _handle_web_search_request(
+            normalized_dict, real_model, is_streaming, session_id, message_count
         )
-
-        try:
-            anthropic_response = await handle_web_search_loop(
-                original_request=normalized_dict,
-                claude_request_fn=non_stream_request,
-                gemini_request_fn=non_stream_request,
-                convert_request_fn=anthropic_to_gemini_request,
-                convert_response_fn=gemini_to_anthropic_response,
-                model=real_model,
-                session_id=session_id,
-                message_count=message_count,
-            )
-
-            # For streaming requests, we need to convert to SSE format
-            if is_streaming:
-                async def web_search_stream_generator():
-                    """Convert non-stream response to SSE stream."""
-                    from src.converter.fake_stream import build_anthropic_fake_stream_chunks
-
-                    content = anthropic_response.get("content", [])
-                    text_parts = []
-                    thinking_parts = []
-
-                    for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif block.get("type") == "thinking":
-                                thinking_parts.append(block.get("thinking", ""))
-
-                    text_content = "".join(text_parts)
-                    thinking_content = "".join(thinking_parts) if thinking_parts else ""
-                    stop_reason = anthropic_response.get("stop_reason", "end_turn")
-
-                    chunks = build_anthropic_fake_stream_chunks(
-                        text_content, thinking_content, stop_reason, real_model, []
-                    )
-                    for chunk in chunks:
-                        yield f"data: {json.dumps(chunk)}\n\n".encode()
-                    yield b"data: [DONE]\n\n"
-
-                return StreamingResponse(
-                    web_search_stream_generator(),
-                    media_type="text/event-stream"
-                )
-            else:
-                return JSONResponse(content=anthropic_response)
-
-        except Exception as e:
-            log.error(f"[ANTIGRAVITY-ANTHROPIC] Web search loop failed: {e}")
-            # Fall through to normal processing
-            import traceback
-            traceback.print_exc()
 
     # 转换为 Gemini 格式 (使用 converter)
     from src.converter.anthropic2gemini import anthropic_to_gemini_request
