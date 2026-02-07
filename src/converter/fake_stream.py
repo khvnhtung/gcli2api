@@ -353,6 +353,24 @@ def create_anthropic_heartbeat_chunk() -> Dict[str, Any]:
     }
 
 
+def format_sse(chunk: Dict[str, Any]) -> bytes:
+    """
+    Format a chunk dict as a proper SSE event with event: prefix.
+
+    Claude Code's SSE parser requires `event: {type}` before `data:`.
+    Without the event: line, data is silently dropped.
+
+    Args:
+        chunk: Dict with a "type" field (e.g. message_start, content_block_delta, ping)
+
+    Returns:
+        Properly formatted SSE bytes: b"event: {type}\\ndata: {json}\\n\\n"
+    """
+    event_type = chunk.get("type", "unknown")
+    payload = json.dumps(chunk, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {payload}\n\n".encode("utf-8")
+
+
 def build_anthropic_fake_stream_chunks(content: str, reasoning_content: str, finish_reason: str, model: str, images: List[Dict[str, Any]] = None, chunk_size: int = 50) -> List[Dict[str, Any]]:
     """构建 Anthropic 格式的假流式响应数据块
 

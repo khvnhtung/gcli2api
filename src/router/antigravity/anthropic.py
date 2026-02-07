@@ -40,6 +40,7 @@ from src.converter.fake_stream import (
     parse_response_for_fake_stream,
     build_anthropic_fake_stream_chunks,
     create_anthropic_heartbeat_chunk,
+    format_sse,
 )
 
 # 本地模块 - Session管理（rewind detection）
@@ -125,9 +126,9 @@ async def _handle_web_search_request(
             )
 
             # Send heartbeats while waiting
-            ping = f"data: {json.dumps({'type': 'ping'})}\n\n".encode()
+            ping_bytes = format_sse({"type": "ping"})
             while not search_task.done():
-                yield ping
+                yield ping_bytes
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(search_task), timeout=3.0
@@ -146,8 +147,7 @@ async def _handle_web_search_request(
                     "type": "error",
                     "error": {"type": "api_error", "message": str(e)},
                 }
-                yield f"data: {json.dumps(error)}\n\n".encode()
-                yield "data: [DONE]\n\n".encode()
+                yield format_sse(error)
                 return
 
             # Extract grounding results and build SSE events
@@ -160,7 +160,7 @@ async def _handle_web_search_request(
             events = build_web_search_sse_events(content_blocks, real_model)
 
             for event in events:
-                yield f"data: {json.dumps(event)}\n\n".encode()
+                yield format_sse(event)
 
         return StreamingResponse(
             web_search_stream_generator(), media_type="text/event-stream"
@@ -345,7 +345,7 @@ async def messages(
     async def fake_stream_generator():
         # 发送心跳
         heartbeat = create_anthropic_heartbeat_chunk()
-        yield f"data: {json.dumps(heartbeat)}\n\n".encode()
+        yield format_sse(heartbeat)
 
         # 异步发送实际请求
         async def get_response():
@@ -361,7 +361,7 @@ async def messages(
             while not response_task.done():
                 await asyncio.sleep(3.0)
                 if not response_task.done():
-                    yield f"data: {json.dumps(heartbeat)}\n\n".encode()
+                    yield format_sse(heartbeat)
 
             # 获取响应结果
             response = await response_task
@@ -398,12 +398,11 @@ async def messages(
                     real_model,
                     response.status_code
                 )
-                yield f"data: {json.dumps(anthropic_error)}\n\n".encode()
+                yield format_sse(anthropic_error)
             except Exception:
                 # 如果无法解析为JSON，包装成错误对象
-                yield f"data: {json.dumps({'error': error_body})}\n\n".encode()
+                yield format_sse({"type": "error", "error": {"type": "api_error", "message": error_body}})
 
-            yield "data: [DONE]\n\n".encode()
             return
 
         # 处理成功响应 - 提取响应内容
@@ -423,8 +422,7 @@ async def messages(
                     real_model,
                     200
                 )
-                yield f"data: {json.dumps(anthropic_error)}\n\n".encode()
-                yield "data: [DONE]\n\n".encode()
+                yield format_sse(anthropic_error)
                 return
 
             # 使用统一的解析函数
@@ -437,9 +435,8 @@ async def messages(
             # 构建响应块
             chunks = build_anthropic_fake_stream_chunks(content, reasoning_content, finish_reason, real_model, images)
             for idx, chunk in enumerate(chunks):
-                chunk_json = json.dumps(chunk)
-                log.debug(f"[FAKE_STREAM] Yielding chunk #{idx+1}: {chunk_json[:200]}")
-                yield f"data: {chunk_json}\n\n".encode()
+                log.debug(f"[FAKE_STREAM] Yielding chunk #{idx+1}: {json.dumps(chunk)[:200]}")
+                yield format_sse(chunk)
 
         except Exception as e:
             log.error(f"Response parsing failed: {e}, directly yield error")
@@ -451,9 +448,7 @@ async def messages(
                     "message": str(e)
                 }
             }
-            yield f"data: {json.dumps(error_chunk)}\n\n".encode()
-
-        yield "data: [DONE]\n\n".encode()
+            yield format_sse(error_chunk)
 
     # ========== 流式抗截断生成器 ==========
     async def anti_truncation_generator():
