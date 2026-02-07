@@ -23,9 +23,13 @@ from log import log
 # Default search model - fast and has googleSearch support
 SEARCH_MODEL = "gemini-2.5-flash"
 
+# Internal function tool name — intentionally different from "web_search" to avoid
+# being caught by anthropic2gemini's web_search → googleSearch mapping.
+_SEARCH_TOOL_NAME = "do_web_search"
+
 # Web search tool schema for Claude
 WEB_SEARCH_FUNCTION_TOOL = {
-    "name": "web_search",
+    "name": _SEARCH_TOOL_NAME,
     "description": (
         "Search the web for current information. Use this when you need up-to-date "
         "information that may not be in your training data, such as current events, "
@@ -121,7 +125,7 @@ def extract_web_search_calls(
 
         if block_type != "tool_use":
             continue
-        if block_name != "web_search":
+        if block_name != _SEARCH_TOOL_NAME:
             continue
 
         tool_id = block.get("id", f"toolu_{uuid.uuid4().hex}")
