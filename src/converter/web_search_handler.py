@@ -1,16 +1,22 @@
 """
 Web Search Tool Handler
 
-Intercepts web_search tool calls from Claude and executes them via Gemini's googleSearch.
-This provides agentic web search for Claude models on Antigravity.
+Intercepts web_search_20250305 server tool requests and executes them via
+Gemini's googleSearch grounding, returning proper Anthropic server_tool_use +
+web_search_tool_result content blocks.
 
-Flow:
-1. Detect web_search tool in request
-2. Convert to callable function tool for Claude
-3. Send request to Claude
-4. If Claude returns web_search tool_use → execute via Gemini with googleSearch
-5. Inject tool_result with search results
-6. Loop back until no more searches or max_iterations
+Claude Code's WebSearch flow:
+1. Claude Code makes a dedicated sub-request with web_search_20250305 in tools
+2. The API is expected to return server_tool_use + web_search_tool_result blocks
+3. Claude Code parses web_search_tool_result to count searches and extract URLs
+4. Results are fed back to the main conversation
+
+Our implementation:
+1. Detect web_search_20250305 tool in request
+2. Strip it from tools, send request to Gemini with googleSearch enabled
+3. Extract groundingMetadata (URLs, titles) from Gemini response
+4. Build proper server_tool_use + web_search_tool_result + text content blocks
+5. Stream as Anthropic SSE events
 """
 
 import json
@@ -22,30 +28,6 @@ from log import log
 
 # Default search model - fast and has googleSearch support
 SEARCH_MODEL = "gemini-2.5-flash"
-
-# Internal function tool name — intentionally different from "web_search" to avoid
-# being caught by anthropic2gemini's web_search → googleSearch mapping.
-_SEARCH_TOOL_NAME = "do_web_search"
-
-# Web search tool schema for Claude
-WEB_SEARCH_FUNCTION_TOOL = {
-    "name": _SEARCH_TOOL_NAME,
-    "description": (
-        "Search the web for current information. Use this when you need up-to-date "
-        "information that may not be in your training data, such as current events, "
-        "weather, stock prices, recent news, or any time-sensitive information."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query to look up on the web"
-            }
-        },
-        "required": ["query"]
-    }
-}
 
 
 def has_web_search_tool(tools: Optional[List[Dict[str, Any]]]) -> bool:
@@ -72,325 +54,283 @@ def get_web_search_config(tools: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"max_uses": 5}
 
 
-def convert_web_search_to_function_tool(
-    tools: Optional[List[Dict[str, Any]]]
+def strip_web_search_tool(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Remove web_search tool from tools list, keep other tools."""
+    if not tools:
+        return []
+    return [t for t in tools if not (
+        isinstance(t.get("type", ""), str) and t["type"].startswith("web_search")
+    )]
+
+
+def extract_grounding_results(
+    gemini_response: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, str]], str]:
+    """
+    Extract grounding metadata from Gemini response.
+
+    Returns:
+        (query, search_results, text_content)
+        - query: the search query used
+        - search_results: list of {title, url} dicts
+        - text_content: the model's text response
+    """
+    # Handle wrapped response format
+    resp = gemini_response
+    if "response" in resp:
+        resp = resp["response"]
+
+    candidates = resp.get("candidates", [])
+    if not candidates:
+        return "", [], ""
+
+    candidate = candidates[0]
+
+    # Extract text content
+    parts = candidate.get("content", {}).get("parts", [])
+    text_parts = []
+    for part in parts:
+        if isinstance(part, dict) and "text" in part:
+            text_parts.append(part["text"])
+    text_content = "\n".join(text_parts)
+
+    # Extract grounding metadata
+    grounding = candidate.get("groundingMetadata", {})
+
+    # Get search query
+    queries = grounding.get("webSearchQueries", [])
+    query = queries[0] if queries else ""
+
+    # Get search result URLs from groundingChunks
+    search_results = []
+    chunks = grounding.get("groundingChunks", [])
+    for chunk in chunks:
+        web = chunk.get("web", {})
+        if web:
+            search_results.append({
+                "title": web.get("title", ""),
+                "url": web.get("uri", ""),
+            })
+
+    log.info(
+        f"[WEB_SEARCH] Extracted grounding: query={query!r}, "
+        f"results={len(search_results)}, text={len(text_content)} chars"
+    )
+
+    return query, search_results, text_content
+
+
+def build_web_search_content_blocks(
+    query: str,
+    search_results: List[Dict[str, str]],
+    text_content: str,
 ) -> List[Dict[str, Any]]:
     """
-    Convert web_search server tool to regular function tool.
+    Build Anthropic content blocks with server_tool_use + web_search_tool_result.
 
-    This allows Claude to call it as a regular tool, which we then intercept.
+    Claude Code expects:
+    - server_tool_use: {type, id, name, input}
+    - web_search_tool_result: {type, tool_use_id, content: [{title, url}]}
+    - text: {type, text}
     """
-    if not tools:
-        return [WEB_SEARCH_FUNCTION_TOOL]
+    tool_use_id = f"srvtoolu_{uuid.uuid4().hex[:24]}"
 
-    result = []
-    has_web_search = False
+    blocks = []
 
-    for tool in tools:
-        tool_type = tool.get("type", "")
-        if isinstance(tool_type, str) and tool_type.startswith("web_search"):
-            has_web_search = True
-            # Replace with function tool version
-            result.append(WEB_SEARCH_FUNCTION_TOOL)
-        else:
-            result.append(tool)
+    # 1. server_tool_use block — the search invocation
+    blocks.append({
+        "type": "server_tool_use",
+        "id": tool_use_id,
+        "name": "web_search",
+        "input": {"query": query},
+    })
 
-    if not has_web_search:
-        result.append(WEB_SEARCH_FUNCTION_TOOL)
+    # 2. web_search_tool_result block — the search results
+    if search_results:
+        blocks.append({
+            "type": "web_search_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": search_results,
+        })
+    else:
+        # No results — return error format
+        blocks.append({
+            "type": "web_search_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": {"error_code": "no_results"},
+        })
 
-    return result
+    # 3. text block — the model's commentary
+    if text_content:
+        blocks.append({
+            "type": "text",
+            "text": text_content,
+        })
+
+    return blocks
 
 
-def extract_web_search_calls(
-    response: Dict[str, Any]
-) -> List[Tuple[str, str]]:
+def build_web_search_sse_events(
+    content_blocks: List[Dict[str, Any]],
+    model: str,
+) -> List[Dict[str, Any]]:
     """
-    Extract web_search tool calls from Claude response.
-
-    Returns:
-        List of (tool_use_id, query) tuples
+    Build Anthropic SSE streaming events for web search response.
     """
-    search_calls = []
-    content = response.get("content", [])
+    message_id = f"msg_{uuid.uuid4().hex}"
+    events = []
 
-    if not isinstance(content, list):
-        return search_calls
+    # 1. message_start
+    events.append({
+        "type": "message_start",
+        "message": {
+            "id": message_id,
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [],
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "server_tool_use": {"web_search_requests": 1},
+            },
+        },
+    })
 
-    for block in content:
-        if not isinstance(block, dict):
-            continue
+    # 2. Content blocks
+    for idx, block in enumerate(content_blocks):
+        block_type = block.get("type", "")
 
-        block_type = block.get("type")
-        block_name = block.get("name")
+        if block_type == "server_tool_use":
+            # content_block_start with server_tool_use
+            events.append({
+                "type": "content_block_start",
+                "index": idx,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": block["id"],
+                    "name": block["name"],
+                    "input": {},
+                },
+            })
+            # Send input via input_json_delta
+            input_json = json.dumps(block.get("input", {}))
+            events.append({
+                "type": "content_block_delta",
+                "index": idx,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": input_json,
+                },
+            })
+            events.append({"type": "content_block_stop", "index": idx})
 
-        if block_type != "tool_use":
-            continue
-        if block_name != _SEARCH_TOOL_NAME:
-            continue
+        elif block_type == "web_search_tool_result":
+            # content_block_start with full result (arrives complete)
+            events.append({
+                "type": "content_block_start",
+                "index": idx,
+                "content_block": block,
+            })
+            events.append({"type": "content_block_stop", "index": idx})
 
-        tool_id = block.get("id", f"toolu_{uuid.uuid4().hex}")
-        input_data = block.get("input", {})
-        query = input_data.get("query", "")
+        elif block_type == "text":
+            events.append({
+                "type": "content_block_start",
+                "index": idx,
+                "content_block": {"type": "text", "text": ""},
+            })
+            # Send text in chunks
+            text = block.get("text", "")
+            chunk_size = 100
+            for i in range(0, max(len(text), 1), chunk_size):
+                chunk = text[i:i + chunk_size]
+                if chunk:
+                    events.append({
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {"type": "text_delta", "text": chunk},
+                    })
+            events.append({"type": "content_block_stop", "index": idx})
 
-        if query:
-            search_calls.append((tool_id, query))
-            log.info(f"[WEB_SEARCH] Detected search call: id={tool_id[:20]}..., query={query[:50]}...")
+    # 3. message_delta + message_stop
+    events.append({
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 0},
+    })
+    events.append({"type": "message_stop"})
 
-    return search_calls
+    return events
 
 
-async def execute_web_search(
+def build_web_search_non_stream_response(
+    content_blocks: List[Dict[str, Any]],
+    model: str,
+) -> Dict[str, Any]:
+    """Build non-streaming Anthropic response with web search results."""
+    return {
+        "id": f"msg_{uuid.uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": content_blocks,
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {"web_search_requests": 1},
+        },
+    }
+
+
+async def execute_gemini_search(
     query: str,
     gemini_request_fn: Callable,
-    allowed_domains: Optional[List[str]] = None,
-    blocked_domains: Optional[List[str]] = None,
-) -> str:
+) -> Dict[str, Any]:
     """
-    Execute web search via Gemini's googleSearch.
+    Execute search via Gemini with googleSearch grounding.
 
-    Args:
-        query: Search query
-        gemini_request_fn: Async function to make Gemini API request
-        allowed_domains: Optional list of allowed domains
-        blocked_domains: Optional list of blocked domains
-
-    Returns:
-        Search results as formatted string
+    Returns the raw Gemini response dict.
     """
-    log.info(f"[WEB_SEARCH] Executing search: {query}")
+    log.info(f"[WEB_SEARCH] Executing Gemini search: {query}")
 
-    # Build Gemini request with googleSearch
     gemini_request = {
         "model": SEARCH_MODEL,
         "request": {
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": f"Search the web and provide comprehensive information about: {query}"}]
+                    "parts": [{"text": query}],
                 }
             ],
             "tools": [{"googleSearch": {}}],
             "generationConfig": {
                 "temperature": 0.3,
                 "maxOutputTokens": 2048,
-            }
-        }
+            },
+        },
     }
 
-    try:
-        # Make request to Gemini
-        response = await gemini_request_fn(body=gemini_request)
+    response = await gemini_request_fn(body=gemini_request)
 
-        # Parse response
-        if hasattr(response, "body"):
-            body = response.body
-            if isinstance(body, memoryview):
-                body = body.tobytes()
-            if isinstance(body, (bytes, bytearray)):
-                body = body.decode("utf-8", errors="ignore")
-            response_data = json.loads(body)
-        else:
-            response_data = response
+    # Parse response
+    if hasattr(response, "body"):
+        body = response.body
+        if isinstance(body, memoryview):
+            body = body.tobytes()
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode("utf-8", errors="ignore")
+        return json.loads(body)
 
-        # Extract text from response
-        # Handle wrapped response format
-        if "response" in response_data:
-            response_data = response_data["response"]
-
-        candidates = response_data.get("candidates", [])
-        if not candidates:
-            log.warning("[WEB_SEARCH] No candidates in Gemini response")
-            return f"Search completed but no results found for: {query}"
-
-        parts = candidates[0].get("content", {}).get("parts", [])
-        text_parts = []
-        for part in parts:
-            if isinstance(part, dict) and "text" in part:
-                text_parts.append(part["text"])
-
-        result = "\n".join(text_parts) if text_parts else f"No detailed results for: {query}"
-        log.info(f"[WEB_SEARCH] Got results: {len(result)} chars")
-        return result
-
-    except Exception as e:
-        log.error(f"[WEB_SEARCH] Search failed: {e}")
-        return f"Web search failed for '{query}': {str(e)}"
-
-
-def build_tool_result_message(
-    tool_use_id: str,
-    result: str
-) -> Dict[str, Any]:
-    """Build a tool_result message block."""
-    return {
-        "type": "tool_result",
-        "tool_use_id": tool_use_id,
-        "content": result
-    }
-
-
-def inject_search_results(
-    messages: List[Dict[str, Any]],
-    assistant_response: Dict[str, Any],
-    search_results: List[Tuple[str, str, str]]  # (tool_id, query, result)
-) -> List[Dict[str, Any]]:
-    """
-    Inject search results into message history.
-
-    Adds:
-    1. Assistant message with the tool_use blocks
-    2. User message with tool_result blocks
-    """
-    new_messages = list(messages)
-
-    # Add assistant message with full content (including tool_use)
-    assistant_content = assistant_response.get("content", [])
-    new_messages.append({
-        "role": "assistant",
-        "content": assistant_content
-    })
-
-    # Add user message with tool results
-    tool_results = []
-    for tool_id, query, result in search_results:
-        tool_results.append(build_tool_result_message(tool_id, result))
-
-    new_messages.append({
-        "role": "user",
-        "content": tool_results
-    })
-
-    return new_messages
-
-
-async def handle_web_search_loop(
-    original_request: Dict[str, Any],
-    claude_request_fn: Callable,
-    gemini_request_fn: Callable,
-    convert_request_fn: Callable,
-    convert_response_fn: Callable,
-    model: str,
-    session_id: Optional[str] = None,
-    message_count: int = 0,
-) -> Dict[str, Any]:
-    """
-    Handle agentic web search loop.
-
-    Args:
-        original_request: Original Anthropic-format request dict
-        claude_request_fn: Async function to make Claude API request (returns Response)
-        gemini_request_fn: Async function to make Gemini API request (returns Response)
-        convert_request_fn: Function to convert Anthropic request to Gemini format
-        convert_response_fn: Function to convert Gemini response to Anthropic format
-        model: Model name
-        session_id: Session ID for caching
-        message_count: Current message count
-
-    Returns:
-        Final Anthropic-format response
-    """
-    tools = original_request.get("tools", [])
-    search_config = get_web_search_config(tools)
-    max_iterations = search_config.get("max_uses", 5)
-    allowed_domains = search_config.get("allowed_domains")
-    blocked_domains = search_config.get("blocked_domains")
-
-    # Convert web_search to function tool
-    modified_tools = convert_web_search_to_function_tool(tools)
-
-    # Working copy of messages
-    messages = list(original_request.get("messages", []))
-
-    iteration = 0
-    final_response = None
-
-    while iteration < max_iterations:
-        iteration += 1
-        log.info(f"[WEB_SEARCH] Loop iteration {iteration}/{max_iterations}")
-
-        # Build request for this iteration
-        current_request = dict(original_request)
-        current_request["messages"] = messages
-        current_request["tools"] = modified_tools
-        current_request["stream"] = False  # Always non-stream for loop
-
-        # Convert to Gemini format and make request
-        gemini_request = await convert_request_fn(current_request, session_id=session_id)
-        gemini_request["model"] = model
-
-        # Normalize request
-        from src.converter.gemini_fix import normalize_gemini_request
-        gemini_request = await normalize_gemini_request(gemini_request, mode="antigravity")
-
-        # Make request
-        api_request = {
-            "model": gemini_request.pop("model"),
-            "request": gemini_request
-        }
-
-        response = await claude_request_fn(body=api_request)
-
-        # Parse response
-        if hasattr(response, "body"):
-            body = response.body
-            if isinstance(body, memoryview):
-                body = body.tobytes()
-            if isinstance(body, (bytes, bytearray)):
-                body = body.decode("utf-8", errors="ignore")
-            gemini_response = json.loads(body)
-        else:
-            gemini_response = response
-
-        log.debug(f"[WEB_SEARCH] Raw Gemini response: {json.dumps(gemini_response, ensure_ascii=False)[:500]}...")
-
-        status_code = getattr(response, "status_code", 200)
-
-        # Convert to Anthropic format
-        anthropic_response = convert_response_fn(
-            gemini_response,
-            model,
-            status_code,
-            session_id=session_id,
-            message_count=message_count + len(messages)
-        )
-
-        log.debug(f"[WEB_SEARCH] Anthropic response: {json.dumps(anthropic_response, ensure_ascii=False)[:500]}...")
-
-        # Check for web_search tool calls
-        search_calls = extract_web_search_calls(anthropic_response)
-
-        if not search_calls:
-            # No more searches needed
-            log.info(f"[WEB_SEARCH] No more search calls, returning final response")
-            final_response = anthropic_response
-            break
-
-        # Execute searches
-        search_results = []
-        for tool_id, query in search_calls:
-            result = await execute_web_search(
-                query,
-                gemini_request_fn,
-                allowed_domains=allowed_domains,
-                blocked_domains=blocked_domains,
-            )
-            search_results.append((tool_id, query, result))
-
-        # Inject results into messages
-        messages = inject_search_results(messages, anthropic_response, search_results)
-        log.info(f"[WEB_SEARCH] Injected {len(search_results)} search results, messages now: {len(messages)}")
-
-    if final_response is None:
-        log.warning(f"[WEB_SEARCH] Max iterations ({max_iterations}) reached")
-        # Return the last response we got
-        final_response = anthropic_response
-
-    return final_response
+    return response
 
 
 def is_claude_model(model: str) -> bool:
     """Check if model is a Claude model (needs web search interception)."""
     if not model:
         return False
-    lower = model.lower()
-    return "claude" in lower
+    return "claude" in model.lower()

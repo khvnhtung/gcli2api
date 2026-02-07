@@ -72,103 +72,121 @@ async def _handle_web_search_request(
     normalized_dict: dict,
     real_model: str,
     is_streaming: bool,
-    session_id: str,
-    message_count: int,
 ):
     """
     Handle requests that include web_search tool for Claude models.
 
-    Claude models on Antigravity don't support googleSearch natively.
-    We intercept web_search tool calls: Claude decides when to search,
-    and we execute searches via a Gemini model with googleSearch grounding.
-
-    For streaming requests, the search loop runs non-streaming internally,
-    then the final response is converted to fake-stream SSE events.
+    Claude Code makes a dedicated sub-request with web_search_20250305 in tools.
+    We execute the search via Gemini's googleSearch grounding and return proper
+    server_tool_use + web_search_tool_result content blocks that Claude Code
+    expects to parse search results from.
     """
-    from src.converter.web_search_handler import handle_web_search_loop
-    from src.converter.anthropic2gemini import (
-        anthropic_to_gemini_request,
-        gemini_to_anthropic_response,
+    from src.converter.web_search_handler import (
+        execute_gemini_search,
+        extract_grounding_results,
+        build_web_search_content_blocks,
+        build_web_search_sse_events,
+        build_web_search_non_stream_response,
     )
-    from src.api.antigravity import non_stream_request as antigravity_non_stream
     from src.api.geminicli import non_stream_request as geminicli_non_stream
 
     log.info(f"[WEB_SEARCH] Starting web search handler for {real_model}")
 
-    try:
-        anthropic_response = await handle_web_search_loop(
-            original_request=normalized_dict,
-            claude_request_fn=antigravity_non_stream,
-            gemini_request_fn=geminicli_non_stream,
-            convert_request_fn=anthropic_to_gemini_request,
-            convert_response_fn=gemini_to_anthropic_response,
-            model=real_model,
-            session_id=session_id,
-            message_count=message_count,
-        )
-    except Exception as e:
-        log.error(f"[WEB_SEARCH] Handler failed: {e}")
-        error_response = {
-            "type": "error",
-            "error": {
-                "type": "api_error",
-                "message": f"Web search handler failed: {str(e)}",
-            },
-        }
-        if is_streaming:
-            async def error_gen():
-                yield f"data: {json.dumps(error_response)}\n\n".encode()
-                yield "data: [DONE]\n\n".encode()
-            return StreamingResponse(error_gen(), media_type="text/event-stream")
-        return JSONResponse(content=error_response, status_code=500)
+    # Extract the search query from the user message
+    messages = normalized_dict.get("messages", [])
+    query = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                query = content
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        query = block.get("text", "")
+                        break
+                    elif isinstance(block, str):
+                        query = block
+                        break
+            break
 
-    if not is_streaming:
-        status_code = anthropic_response.get("status_code", 200)
-        if isinstance(status_code, str):
+    if not query:
+        log.warning("[WEB_SEARCH] No query found in request")
+        query = "web search"
+
+    log.info(f"[WEB_SEARCH] Query: {query[:100]}")
+
+    # For streaming: send heartbeats while search runs in background
+    if is_streaming:
+        async def web_search_stream_generator():
+            # Launch search as background task
+            search_task = asyncio.create_task(
+                execute_gemini_search(query, geminicli_non_stream)
+            )
+
+            # Send heartbeats while waiting
+            ping = f"data: {json.dumps({'type': 'ping'})}\n\n".encode()
+            while not search_task.done():
+                yield ping
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(search_task), timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    break
+
+            # Get result
             try:
-                status_code = int(status_code)
-            except ValueError:
-                status_code = 200
-        return JSONResponse(content=anthropic_response, status_code=status_code)
+                gemini_response = search_task.result()
+            except Exception as e:
+                log.error(f"[WEB_SEARCH] Search failed: {e}")
+                error = {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": str(e)},
+                }
+                yield f"data: {json.dumps(error)}\n\n".encode()
+                yield "data: [DONE]\n\n".encode()
+                return
 
-    # Streaming: convert the non-streaming response to fake-stream SSE events
-    async def web_search_stream_generator():
-        from src.converter.fake_stream import (
-            build_anthropic_fake_stream_chunks,
-            create_anthropic_heartbeat_chunk,
+            # Extract grounding results and build SSE events
+            grounding_query, search_results, text_content = (
+                extract_grounding_results(gemini_response)
+            )
+            content_blocks = build_web_search_content_blocks(
+                grounding_query or query, search_results, text_content
+            )
+            events = build_web_search_sse_events(content_blocks, real_model)
+
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n".encode()
+
+        return StreamingResponse(
+            web_search_stream_generator(), media_type="text/event-stream"
         )
 
-        # Send initial heartbeat
-        heartbeat = create_anthropic_heartbeat_chunk()
-        yield f"data: {json.dumps(heartbeat)}\n\n".encode()
-
-        # Extract content from the Anthropic response
-        content_blocks = anthropic_response.get("content", [])
-        text_content = ""
-        reasoning_content = ""
-
-        for block in content_blocks:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type", "")
-            if block_type == "thinking":
-                reasoning_content += block.get("thinking", "")
-            elif block_type == "text":
-                text_content += block.get("text", "")
-
-        finish_reason = anthropic_response.get("stop_reason", "end_turn")
-
-        chunks = build_anthropic_fake_stream_chunks(
-            text_content, reasoning_content, finish_reason, real_model, []
+    # Non-streaming
+    try:
+        gemini_response = await execute_gemini_search(query, geminicli_non_stream)
+    except Exception as e:
+        log.error(f"[WEB_SEARCH] Search failed: {e}")
+        return JSONResponse(
+            content={
+                "type": "error",
+                "error": {"type": "api_error", "message": str(e)},
+            },
+            status_code=500,
         )
-        for chunk in chunks:
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
 
-        yield "data: [DONE]\n\n".encode()
-
-    return StreamingResponse(
-        web_search_stream_generator(), media_type="text/event-stream"
+    grounding_query, search_results, text_content = (
+        extract_grounding_results(gemini_response)
     )
+    content_blocks = build_web_search_content_blocks(
+        grounding_query or query, search_results, text_content
+    )
+    response = build_web_search_non_stream_response(content_blocks, real_model)
+    return JSONResponse(content=response)
 
 
 # ==================== 路由器初始化 ====================
@@ -272,7 +290,7 @@ async def messages(
     if has_web_search_tool(normalized_dict.get("tools")) and is_claude_model(real_model):
         log.info(f"[ANTIGRAVITY-ANTHROPIC] Web search detected for Claude model {real_model}, using search handler")
         return await _handle_web_search_request(
-            normalized_dict, real_model, is_streaming, session_id, message_count
+            normalized_dict, real_model, is_streaming
         )
 
     # 转换为 Gemini 格式 (使用 converter)
