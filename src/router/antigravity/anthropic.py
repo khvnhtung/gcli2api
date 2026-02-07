@@ -208,10 +208,10 @@ async def messages(
         claude_request: Anthropic/Claude格式的请求体
         token: Bearer认证令牌
     """
-    log.debug(f"[ANTIGRAVITY-ANTHROPIC] Request for model: {claude_request.model}")
-
     # 转换为字典
     normalized_dict = model_to_dict(claude_request)
+
+    log.info(f"[ANTIGRAVITY-ANTHROPIC] Request for model: {claude_request.model}, thinking: {normalized_dict.get('thinking')}")
 
     # 健康检查
     if is_health_check_request(normalized_dict, format="anthropic"):

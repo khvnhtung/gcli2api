@@ -163,8 +163,9 @@ def is_search_model(model_name: str) -> bool:
 # ==================== 统一的 Gemini 请求后处理 ====================
 
 def is_thinking_model(model_name: str) -> bool:
-    """检查是否为思考模型 (包含 -thinking 或 pro)"""
-    return "think" in model_name or "pro" in model_name.lower()
+    """检查是否为思考模型 (包含 -thinking, pro, or claude)"""
+    lower = model_name.lower()
+    return "think" in lower or "pro" in lower or "claude" in lower
 
 
 async def normalize_gemini_request(
@@ -283,17 +284,39 @@ async def normalize_gemini_request(
             return prepare_image_generation_request(result, model)
         else:
             # 3. 思考模型处理
-            if is_thinking_model(model) or ("thinkingBudget" in generation_config.get("thinkingConfig", {}) and generation_config["thinkingConfig"]["thinkingBudget"] != 0):
-                # 直接设置 thinkingConfig
-                if "thinkingConfig" not in generation_config:
-                    generation_config["thinkingConfig"] = {}
-                
-                thinking_config = generation_config["thinkingConfig"]
-                # 优先使用传入的思考预算，否则使用默认值
-                if "thinkingBudget" not in thinking_config:
-                    thinking_config["thinkingBudget"] = 1024
-                thinking_config.pop("thinkingLevel", None)  # 避免与 thinkingBudget 冲突
-                thinking_config["includeThoughts"] = return_thoughts
+            is_claude = "claude" in model.lower()
+            existing_thinking = generation_config.get("thinkingConfig", {})
+            has_budget = "thinkingBudget" in existing_thinking and existing_thinking["thinkingBudget"] != 0
+            anthropic_thinking = generation_config.pop("_anthropic_thinking", None)
+
+            if is_thinking_model(model) or has_budget:
+                if is_claude:
+                    # Claude on Antigravity uses snake_case thinkingConfig fields
+                    # (matching antigravity-claude-proxy's format)
+                    thinking_config: dict = {"include_thoughts": return_thoughts}
+
+                    if "thinkingBudget" in existing_thinking:
+                        thinking_config["thinking_budget"] = existing_thinking["thinkingBudget"]
+                    elif anthropic_thinking and anthropic_thinking.get("type") == "adaptive":
+                        # Antigravity doesn't support true adaptive — use fixed budget
+                        # Claude Code uses 31999 for non-adaptive; we match that
+                        thinking_config["thinking_budget"] = 32000
+                        log.info("[ANTIGRAVITY] Claude adaptive thinking → fixed budget 32000 (API doesn't support adaptive)")
+                    else:
+                        thinking_config["thinking_budget"] = 1024
+
+                    generation_config["thinkingConfig"] = thinking_config
+                    log.info(f"[ANTIGRAVITY] Claude thinkingConfig: {thinking_config}")
+                else:
+                    # Gemini models use camelCase thinkingConfig fields
+                    if "thinkingConfig" not in generation_config:
+                        generation_config["thinkingConfig"] = {}
+
+                    thinking_config = generation_config["thinkingConfig"]
+                    if "thinkingBudget" not in thinking_config:
+                        thinking_config["thinkingBudget"] = 1024
+                    thinking_config.pop("thinkingLevel", None)
+                    thinking_config["includeThoughts"] = return_thoughts
                 
                 # 检查最后一个 assistant 消息是否以 thinking 块开始
                 contents = result.get("contents", [])

@@ -1221,35 +1221,40 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     if max_tokens is not None:
         config["maxOutputTokens"] = max_tokens
 
-    # 处理 extended thinking 参数 (plan mode)
+    # 处理 extended thinking 参数
     thinking = payload.get("thinking")
     is_plan_mode = False
     if thinking and isinstance(thinking, dict):
         thinking_type = thinking.get("type")
         budget_tokens = thinking.get("budget_tokens")
 
-        # 如果启用了 extended thinking，设置 thinkingConfig
-        if thinking_type == "enabled":
-            is_plan_mode = True
+        # Store original thinking config for downstream use (gemini_fix.py)
+        config["_anthropic_thinking"] = thinking
+
+        # "adaptive" is Claude Code's thinking mode for Opus 4.6 / Sonnet 4.
+        # "enabled" is the explicit mode with fixed budget_tokens.
+        if thinking_type in ("enabled", "adaptive"):
+            is_plan_mode = thinking_type == "enabled"
             thinking_config: Dict[str, Any] = {}
 
-            # 设置思考预算，默认使用较大的值以支持计划模式
             # CRITICAL FIX: Gemini API requires minimum 1024 tokens for thinking budget
             if budget_tokens is not None:
-                # Enforce minimum of 1024 to avoid API rejection
                 effective_budget = max(1024, int(budget_tokens))
                 if budget_tokens < 1024:
                     log.warning(f"[ANTHROPIC2GEMINI] budget_tokens {budget_tokens} below minimum 1024, using 1024")
                 thinking_config["thinkingBudget"] = effective_budget
-            else:
-                # 默认给一个较大的思考预算以支持完整的计划生成
+            elif thinking_type == "enabled":
+                # Explicit enabled without budget — use large default
                 thinking_config["thinkingBudget"] = 48000
-            
-            # 始终包含思考内容，这样才能看到计划
+            else:
+                # Adaptive: Antigravity doesn't support true adaptive,
+                # so we set a fixed budget matching Claude Code's default (31999)
+                thinking_config["thinkingBudget"] = 32000
+
             thinking_config["includeThoughts"] = True
-            
+
             config["thinkingConfig"] = thinking_config
-            log.info(f"[ANTHROPIC2GEMINI] Extended thinking enabled with budget: {thinking_config['thinkingBudget']}")
+            log.info(f"[ANTHROPIC2GEMINI] Thinking {thinking_type} with budget: {thinking_config['thinkingBudget']}")
         elif thinking_type == "disabled":
             # 明确禁用思考模式
             config["thinkingConfig"] = {
