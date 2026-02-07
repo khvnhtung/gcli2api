@@ -809,9 +809,11 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
 
         # Anthropic web_search tool → Gemini googleSearch
         # Anthropic format: {"type": "web_search_20250305", "name": "web_search", ...}
-        if tool_type.startswith("web_search"):
+        # Also check for name-based detection (some clients use name instead of type)
+        WEB_SEARCH_PATTERNS = {"web_search", "google_search", "google_search_retrieval"}
+        if tool_type.startswith("web_search") or tool_name in WEB_SEARCH_PATTERNS:
             has_google_search = True
-            log.info(f"[TOOLS] Mapping Anthropic web_search tool to Gemini googleSearch")
+            log.info(f"[TOOLS] Mapping Anthropic web_search tool to Gemini googleSearch (type={tool_type}, name={tool_name})")
             continue  # Skip adding to functionDeclarations
 
         name = tool.get("name", "nameless_function")
@@ -830,10 +832,18 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
     # Build result tools array
     result: List[Dict[str, Any]] = []
 
-    # Add googleSearch if web_search was detected
+    # Add googleSearch if web_search was detected (with enhancedContent like Antigravity-Proxy)
     if has_google_search:
-        result.append({"googleSearch": {}})
-        log.info(f"[TOOLS] Added googleSearch to tools array")
+        result.append({
+            "googleSearch": {
+                "enhancedContent": {
+                    "imageSearch": {
+                        "maxResultCount": 5
+                    }
+                }
+            }
+        })
+        log.info(f"[TOOLS] Added googleSearch with enhancedContent to tools array")
 
     # Add function declarations if any
     if function_declarations:
