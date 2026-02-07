@@ -290,12 +290,16 @@ def build_web_search_non_stream_response(
 async def execute_gemini_search(
     query: str,
     gemini_request_fn: Callable,
+    max_retries: int = 2,
 ) -> Dict[str, Any]:
     """
     Execute search via Gemini with googleSearch grounding.
 
-    Returns the raw Gemini response dict.
+    Retries on empty grounding results (common with parallel requests
+    hitting rate limits). Returns the raw Gemini response dict.
     """
+    import asyncio
+
     log.info(f"[WEB_SEARCH] Executing Gemini search: {query}")
 
     gemini_request = {
@@ -315,18 +319,40 @@ async def execute_gemini_search(
         },
     }
 
-    response = await gemini_request_fn(body=gemini_request)
+    parsed: Dict[str, Any] = {}
+    for attempt in range(max_retries + 1):
+        response = await gemini_request_fn(body=gemini_request)
 
-    # Parse response
-    if hasattr(response, "body"):
-        body = response.body
-        if isinstance(body, memoryview):
-            body = body.tobytes()
-        if isinstance(body, (bytes, bytearray)):
-            body = body.decode("utf-8", errors="ignore")
-        return json.loads(body)
+        # Parse response
+        if hasattr(response, "body"):
+            body = response.body
+            if isinstance(body, memoryview):
+                body = body.tobytes()
+            if isinstance(body, (bytes, bytearray)):
+                body = body.decode("utf-8", errors="ignore")
+            parsed = json.loads(body)
+        else:
+            parsed = response
 
-    return response
+        # Check if we got grounding results
+        _, results, _ = extract_grounding_results(parsed)
+        if results or attempt >= max_retries:
+            if not results and attempt >= max_retries:
+                log.warning(
+                    f"[WEB_SEARCH] No grounding results after {max_retries + 1} attempts "
+                    f"for query: {query[:80]}"
+                )
+            return parsed
+
+        # Retry with backoff — likely rate-limited from parallel requests
+        delay = 1.0 * (attempt + 1)
+        log.info(
+            f"[WEB_SEARCH] No grounding results on attempt {attempt + 1}, "
+            f"retrying in {delay}s: {query[:80]}"
+        )
+        await asyncio.sleep(delay)
+
+    return parsed
 
 
 def is_claude_model(model: str) -> bool:

@@ -465,6 +465,14 @@ The model will include inline citation numbers and a full source list with click
 - `src/converter/gemini_fix.py`: Handles `-search` model suffix
 - `src/converter/web_search_handler.py`: Agentic search loop for Claude (not yet integrated)
 
+### Parallel Search Limitations
+
+Gemini's googleSearch grounding is rate-limited per account. When Claude Code fires multiple web searches in parallel:
+- **2 parallel searches**: Reliable, all return results
+- **3+ parallel searches**: Some return `no_results` due to rate limiting
+- gcli2api auto-retries empty results (up to 2 retries with backoff), which helps recover from transient throttling
+- If building tools that use web search, limit concurrent searches to **2 at a time**
+
 ### Search Model Configuration
 
 The default search executor model is defined in `src/converter/web_search_handler.py`:
