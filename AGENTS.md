@@ -359,6 +359,121 @@ journalctl --user -u gcli2api --no-pager -n 100 | grep "SignatureCache"
 
 **Solution**: `strip_invalid_thinking_blocks()` removes incompatible signatures. Thinking recovery handles the transition.
 
+## Web Search (Google Search Grounding)
+
+gcli2api provides web search capability via Gemini's native `googleSearch` grounding feature. This allows models to access real-time information from the web.
+
+### Supported Models by Endpoint
+
+**GeminiCLI Endpoint (`/v1/...`)** - Recommended for search
+
+| Model | Search | Notes |
+|-------|--------|-------|
+| `gemini-2.5-flash` | ✓ | Stable, recommended |
+| `gemini-2.5-pro` | ✓ | May have capacity issues |
+| `gemini-3-flash-preview` | ✓ | Best quality, full URL citations |
+| `gemini-3-pro-preview` | ✓ | Best quality, full URL citations |
+
+**Antigravity Endpoint (`/antigravity/v1/...`)**
+
+| Model | Search | Notes |
+|-------|--------|-------|
+| `gemini-2.5-flash` | ✓ | Works, provides URLs when asked |
+| `gemini-2.5-pro` | ✗ | Capacity/auth issues |
+| `gemini-3-flash-preview` | ✗ | 404 - Not available |
+| `gemini-3-pro-preview` | ✗ | 404 - Not available |
+| Claude models | ✗ | No native googleSearch support |
+
+### How to Enable Search
+
+**GeminiCLI - OpenAI format with `-search` suffix (recommended):**
+```bash
+curl -s -X POST "http://127.0.0.1:7861/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PASSWORD" \
+  -d '{
+    "model": "gemini-3-flash-preview-search",
+    "messages": [{"role": "user", "content": "What is the current Bitcoin price? Include full source URLs."}]
+  }'
+```
+
+**GeminiCLI - Anthropic format with web_search tool:**
+```bash
+curl -s -X POST "http://127.0.0.1:7861/v1/messages" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $PASSWORD" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "max_tokens": 2048,
+    "stream": false,
+    "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+    "messages": [{"role": "user", "content": "Latest news about AI"}]
+  }'
+```
+
+**Antigravity - Anthropic format only (no `-search` suffix support):**
+```bash
+curl -s -X POST "http://127.0.0.1:7861/antigravity/v1/messages" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $PASSWORD" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "max_tokens": 2048,
+    "stream": false,
+    "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+    "messages": [{"role": "user", "content": "Bitcoin price? Output full URLs for each source."}]
+  }'
+```
+
+**Native Gemini format:**
+```bash
+curl -s -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-flash:generateContent?key=$PASSWORD" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{"role": "user", "parts": [{"text": "Bitcoin price now?"}]}],
+    "tools": [{"googleSearch": {}}]
+  }'
+```
+
+### Endpoint Summary
+
+| Endpoint | Format | Search Method |
+|----------|--------|---------------|
+| `/v1/chat/completions` | OpenAI | `-search` suffix ✓ |
+| `/v1/messages` | Anthropic | `web_search` tool ✓ |
+| `/antigravity/v1/messages` | Anthropic | `web_search` tool ✓ (gemini-2.5-flash only) |
+| `/antigravity/v1/chat/completions` | OpenAI | ✗ Not supported |
+
+### Getting Citations
+
+To get sources and URLs in responses, explicitly ask for them:
+```
+"What is the current Bitcoin price? Provide your sources and citations with URLs."
+```
+
+The model will include inline citation numbers and a full source list with clickable URLs.
+
+### How Search Works Internally
+
+1. When `web_search_20250305` tool or `-search` suffix is detected
+2. gcli2api maps it to Gemini's native `googleSearch` tool
+3. The same Gemini model executes the search internally (not a separate model)
+4. Results are grounded in real-time Google Search data
+
+**Key files:**
+- `src/converter/anthropic2gemini.py`: Maps `web_search` → `googleSearch`
+- `src/converter/gemini_fix.py`: Handles `-search` model suffix
+- `src/converter/web_search_handler.py`: Agentic search loop for Claude (not yet integrated)
+
+### Search Model Configuration
+
+The default search executor model is defined in `src/converter/web_search_handler.py`:
+```python
+SEARCH_MODEL = "gemini-2.5-flash"
+```
+
+This is used when Claude models need search (future feature).
+
 ## Companion Tools
 
 ### mcp-gcli2api-search

@@ -23,16 +23,6 @@ Enhance the existing `web_search` tool to support:
         "type": "string",
         "description": "The search query"
       },
-      "allowed_domains": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Only return results from these domains (e.g., [\"arxiv.org\", \"github.com\"])"
-      },
-      "blocked_domains": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Exclude results from these domains"
-      },
       "recency_filter": {
         "type": "string",
         "enum": ["day", "week", "month", "year"],
@@ -50,29 +40,7 @@ Enhance the existing `web_search` tool to support:
 
 ## Implementation
 
-### 1. Query Modification (web_search_handler.py)
-
-```python
-def build_search_query(
-    query: str,
-    allowed_domains: list[str] | None = None,
-    blocked_domains: list[str] | None = None,
-) -> str:
-    """Build modified query with domain filters via site: operators."""
-    parts = [query]
-
-    if allowed_domains:
-        site_filter = " OR ".join(f"site:{d}" for d in allowed_domains)
-        parts.append(f"({site_filter})")
-
-    if blocked_domains:
-        for domain in blocked_domains:
-            parts.append(f"-site:{domain}")
-
-    return " ".join(parts)
-```
-
-### 2. Recency Hints
+### 1. Recency Hints (web_search_handler.py)
 
 ```python
 RECENCY_HINTS = {
@@ -88,7 +56,7 @@ if recency_filter:
     prompt += f"\n\nFocus on results {RECENCY_HINTS[recency_filter]}."
 ```
 
-### 3. Grounding Metadata Extraction
+### 2. Grounding Metadata Extraction
 
 ```python
 def extract_grounding_sources(response_data: dict) -> list[dict]:
@@ -108,7 +76,7 @@ def extract_grounding_sources(response_data: dict) -> list[dict]:
     return sources
 ```
 
-### 4. Inline Citation Formatting
+### 3. Inline Citation Formatting
 
 ```python
 def format_response_with_citations(text: str, sources: list[dict]) -> str:
@@ -155,7 +123,7 @@ The latest research on transformer architectures shows significant advances in e
 
 ## Constraints
 
-- Domain filtering uses Google's `site:` operator (reliable)
 - Recency filtering uses prompt hints (best-effort, not guaranteed)
 - `max_results` is a hint to the model (Gemini doesn't expose result count control)
 - Citations extracted from `groundingMetadata.groundingChunks[].web`
+- Domain filtering was removed as Gemini's googleSearch doesn't enforce site: operators
