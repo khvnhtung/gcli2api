@@ -4,7 +4,7 @@ Retry Strategy Module - Enhanced with Smart Backoff
 Provides intelligent retry with exponential backoff for different error types.
 Enhanced with error classification to distinguish between:
 - QUOTA_EXHAUSTED: Daily/hourly quota used up (rotate account, long wait)
-- MODEL_CAPACITY_EXHAUSTED: Google infrastructure overloaded (same account, short wait)
+- MODEL_CAPACITY_EXHAUSTED: Google infrastructure overloaded (rotate account, short wait)
 - RATE_LIMIT_EXCEEDED: Per-minute rate limit (standard backoff)
 - SERVER_ERROR: 5xx errors (exponential backoff)
 
@@ -403,7 +403,7 @@ def determine_retry_strategy(
 
     Enhanced with smart backoff by error type:
     - QUOTA_EXHAUSTED: Progressive [60s, 5m, 30m, 2h], rotate account
-    - MODEL_CAPACITY_EXHAUSTED: Short delays [5s-60s], SAME account
+    - MODEL_CAPACITY_EXHAUSTED: Short delays [2s-15s], rotate account
     - RATE_LIMIT_EXCEEDED: Standard 30s backoff
     - SERVER_ERROR: Exponential backoff
 
@@ -441,8 +441,8 @@ def determine_retry_strategy(
 
     elif status_code in (503, 529):
         reason = RateLimitReason.MODEL_CAPACITY_EXHAUSTED
-        # Exponential backoff for capacity exhausted
-        return (RetryStrategy.EXPONENTIAL_BACKOFF, 10000, 60000, reason)
+        # Short delay + rotate: spread load across accounts under capacity pressure
+        return (RetryStrategy.LINEAR_BACKOFF, 2000, 15000, reason)
 
     elif status_code == 500:
         reason = RateLimitReason.SERVER_ERROR
@@ -466,7 +466,7 @@ def should_rotate_account(status_code: int, error_text: str = "") -> bool:
     - RATE_LIMIT_EXCEEDED (429): Rotate - per-account limit
     - 401/403: Rotate - account-level auth issue
     - 500: Rotate - might be account-specific
-    - 503/529: DON'T rotate - global capacity issue
+    - 503/529: Rotate - spread load across accounts under capacity pressure
 
     Args:
         status_code: HTTP status code
@@ -494,9 +494,9 @@ def should_rotate_account(status_code: int, error_text: str = "") -> bool:
     if status_code == 500:
         return True
 
-    # Capacity errors (503, 529) - don't rotate, global issue
+    # Capacity errors (503, 529) - rotate to spread load across accounts
     if status_code in (503, 529):
-        return False
+        return True
 
     return False
 

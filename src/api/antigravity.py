@@ -33,6 +33,8 @@ from src.utils import ANTIGRAVITY_USER_AGENT
 # 导入共同的基础功能
 from src.api.utils import (
     handle_error_with_retry,
+    check_should_auto_ban,
+    handle_auto_ban,
     get_retry_config,
     record_api_call_success,
     record_api_call_error,
@@ -505,6 +507,11 @@ async def stream_request(
                             credential_manager, current_file, status_code,
                             cooldown_until, mode="antigravity", model_key=model_name
                         )
+                        # Auto-ban: disable credential on DISABLE_ERROR_CODES
+                        if await check_should_auto_ban(status_code):
+                            await handle_auto_ban(
+                                credential_manager, status_code, current_file, mode="antigravity"
+                            )
 
                         # 应用重试延迟
                         if attempt < max_retries:
@@ -593,9 +600,8 @@ async def stream_request(
             if need_retry:
                 log.info(f"[ANTIGRAVITY STREAM] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
 
-                # For transient server-side errors (e.g. 503 capacity), do NOT rotate
-                # credentials. Retrying with a different account doesn't help and can
-                # lead to "no available credentials" due to exclude_filenames.
+                # For non-rotating errors (e.g. empty response), keep the same credential.
+                # For capacity errors (503/529), rotation is handled by should_rotate_account.
                 if (
                     last_status_code_for_retry is not None
                     and not should_rotate_account(int(last_status_code_for_retry), last_error_body)
@@ -1021,6 +1027,11 @@ async def non_stream_request(
                         credential_manager, current_file, status_code,
                         cooldown_until, mode="antigravity", model_key=model_name
                     )
+                    # Auto-ban: disable credential on DISABLE_ERROR_CODES
+                    if await check_should_auto_ban(status_code):
+                        await handle_auto_ban(
+                            credential_manager, status_code, current_file, mode="antigravity"
+                        )
 
                     # 应用重试延迟
                     if attempt < max_retries:

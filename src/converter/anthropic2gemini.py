@@ -1262,6 +1262,17 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
             log.info("[ANTHROPIC2GEMINI] Extended thinking explicitly disabled")
 
+    # Effort level mapping (Claude API v2.0.67+)
+    # Maps Claude's output_config.effort to Gemini's generationConfig.effortLevel
+    output_config = payload.get("output_config")
+    if isinstance(output_config, dict):
+        effort = output_config.get("effort")
+        if isinstance(effort, str):
+            effort_map = {"high": "HIGH", "medium": "MEDIUM", "low": "LOW"}
+            effort_level = effort_map.get(effort.lower(), "HIGH")
+            config["effortLevel"] = effort_level
+            log.info(f"[ANTHROPIC2GEMINI] Effort level: {effort} -> {effort_level}")
+
     stop_sequences = payload.get("stop_sequences")
     if isinstance(stop_sequences, list) and stop_sequences:
         config["stopSequences"] = config["stopSequences"] + [str(s) for s in stop_sequences]

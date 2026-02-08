@@ -36,6 +36,8 @@ from src.httpx_client import stream_post_async, post_async
 # 导入共同的基础功能
 from src.api.utils import (
     handle_error_with_retry,
+    check_should_auto_ban,
+    handle_auto_ban,
     get_retry_config,
     record_api_call_success,
     record_api_call_error,
@@ -539,6 +541,11 @@ async def non_stream_request(
                     credential_manager, current_file, status_code,
                     None, mode="geminicli", model_key=model_group
                 )
+                # Auto-ban: disable credential on DISABLE_ERROR_CODES
+                if await check_should_auto_ban(status_code):
+                    await handle_auto_ban(
+                        credential_manager, status_code, current_file, mode="geminicli"
+                    )
                 # 尝试切换到新凭证并重试
                 if attempt < max_retries:
                     log.info(f"[NON-STREAM] 切换凭证并重试 (attempt {attempt + 2}/{max_retries + 1})...")
