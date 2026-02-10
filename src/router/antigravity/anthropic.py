@@ -56,7 +56,7 @@ from src.models import ClaudeRequest, model_to_dict
 from src.task_manager import create_managed_task
 
 # 本地模块 - Token估算
-from src.token_estimator import estimate_input_tokens
+from src.token_estimator import count_tokens_native, estimate_input_tokens, scale_usage_tokens
 from src.credential_manager import credential_manager
 
 
@@ -762,12 +762,24 @@ async def count_tokens(
         f"thinking_present={thinking_present}, thinking={thinking_summary}, ua={user_agent}"
     )
 
-    # 简单估算
+    # Native countTokens via Gemini API, fall back to local estimation
     input_tokens = 0
     try:
-        input_tokens = estimate_input_tokens(payload)
+        native_count = await count_tokens_native(payload)
+        if native_count is not None:
+            input_tokens = native_count
+        else:
+            input_tokens = estimate_input_tokens(payload)
     except Exception as e:
         log.error(f"[ANTIGRAVITY-ANTHROPIC] token 估算失败: {e}")
+        try:
+            input_tokens = estimate_input_tokens(payload)
+        except Exception:
+            pass
+
+    # Scale for Gemini models (1M+ context → 200K for Claude Code)
+    model_name = payload.get("model", "")
+    input_tokens, _ = scale_usage_tokens(input_tokens, 0, model_name)
 
     return JSONResponse(content={"input_tokens": input_tokens})
 

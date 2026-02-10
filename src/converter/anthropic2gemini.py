@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 from log import log
 from src.converter.utils import merge_system_messages
+from src.token_estimator import scale_usage_tokens
 
 from src.converter.thoughtSignature_fix import (
     encode_tool_id_with_signature,
@@ -1268,7 +1269,7 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(output_config, dict):
         effort = output_config.get("effort")
         if isinstance(effort, str):
-            effort_map = {"high": "HIGH", "medium": "MEDIUM", "low": "LOW"}
+            effort_map = {"max": "HIGH", "high": "HIGH", "medium": "MEDIUM", "low": "LOW"}
             effort_level = effort_map.get(effort.lower(), "HIGH")
             config["effortLevel"] = effort_level
             log.info(f"[ANTHROPIC2GEMINI] Effort level: {effort} -> {effort_level}")
@@ -1519,6 +1520,11 @@ def gemini_to_anthropic_response(
     input_tokens = usage_metadata.get("promptTokenCount", 0) if isinstance(usage_metadata, dict) else 0
     output_tokens = usage_metadata.get("candidatesTokenCount", 0) if isinstance(usage_metadata, dict) else 0
 
+    # Scale Gemini token counts to fit Claude Code's 200K context window
+    input_tokens, output_tokens = scale_usage_tokens(
+        int(input_tokens or 0), int(output_tokens or 0), model
+    )
+
     # 构建 Anthropic 响应
     message_id = f"msg_{uuid.uuid4().hex}"
 
@@ -1659,7 +1665,7 @@ async def gemini_stream_to_anthropic_stream(
                             "content": [],
                             "stop_reason": None,
                             "stop_sequence": None,
-                            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                            "usage": {"input_tokens": scale_usage_tokens(input_tokens, output_tokens, model)[0], "output_tokens": output_tokens},
                         },
                     },
                 )
@@ -1870,12 +1876,14 @@ async def gemini_stream_to_anthropic_stream(
             )
 
         # 发送 message_delta 和 message_stop
+        scaled_input, _ = scale_usage_tokens(input_tokens, output_tokens, model)
         yield _sse_event(
             "message_delta",
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": None},
                 "usage": {
+                    "input_tokens": scaled_input,
                     "output_tokens": output_tokens,
                 },
             },
