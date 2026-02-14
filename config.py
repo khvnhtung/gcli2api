@@ -57,6 +57,10 @@ ENV_MAPPINGS = {
 
     # Audit log
     "AUDIT_LOG_ENABLED": "audit_log_enabled",
+    "AUDIT_RAW_ENABLED": "audit_raw_enabled",
+    "AUDIT_RAW_DIR": "audit_raw_dir",
+    "AUDIT_RAW_RETENTION_DAYS": "audit_raw_retention_days",
+    "AUDIT_RAW_MAX_BYTES": "audit_raw_max_bytes",
 
     "HOST": "host",
     "PORT": "port",
@@ -125,6 +129,12 @@ async def build_effective_config_for_panel() -> tuple[dict[str, Any], set[str]]:
     current_config["pool_wait_enabled"] = await get_pool_wait_enabled()
     current_config["pool_wait_max_seconds"] = await get_pool_wait_max_seconds()
     current_config["pool_wait_poll_seconds"] = await get_pool_wait_poll_seconds()
+
+    # Audit raw payload capture
+    current_config["audit_raw_enabled"] = await get_audit_raw_enabled()
+    current_config["audit_raw_dir"] = await get_audit_raw_dir()
+    current_config["audit_raw_retention_days"] = await get_audit_raw_retention_days()
+    current_config["audit_raw_max_bytes"] = await get_audit_raw_max_bytes()
 
     # Server config
     current_config["host"] = await get_server_host()
@@ -592,6 +602,37 @@ async def get_pool_wait_poll_seconds() -> float:
         except ValueError:
             pass
     return float(await get_config_value("pool_wait_poll_seconds", 1.0))
+
+
+async def get_audit_raw_enabled() -> bool:
+    env_value = os.getenv("AUDIT_RAW_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("audit_raw_enabled", False))
+
+
+async def get_audit_raw_dir() -> str:
+    return str(await get_config_value("audit_raw_dir", "./audit_payloads", "AUDIT_RAW_DIR"))
+
+
+async def get_audit_raw_retention_days() -> int:
+    env_value = os.getenv("AUDIT_RAW_RETENTION_DAYS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("audit_raw_retention_days", 7))
+
+
+async def get_audit_raw_max_bytes() -> int:
+    env_value = os.getenv("AUDIT_RAW_MAX_BYTES")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("audit_raw_max_bytes", 1024 * 1024))
 
 
 async def get_oauth_proxy_url() -> str:

@@ -9,9 +9,11 @@ Feature-gated via AUDIT_LOG_ENABLED config (default: True).
 
 import asyncio
 import contextvars
+from datetime import datetime
 import hashlib
 import json
 import os
+from pathlib import Path
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -35,6 +37,10 @@ _VALIDATION_PHRASES = [
     "verify your account",
 ]
 
+_ROLLING_5H_MIN_SECONDS = 4 * 3600
+_ROLLING_5H_MAX_SECONDS = 6 * 3600
+_WEEKLY_LIKE_MIN_SECONDS = 24 * 3600
+
 # ---------------------------------------------------------------------------
 # Module state
 # ---------------------------------------------------------------------------
@@ -43,6 +49,11 @@ _db_path: Optional[str] = None
 _enabled: bool = True
 _initialized: bool = False
 _init_lock = asyncio.Lock()
+
+_raw_enabled: bool = True
+_raw_dir: str = "./audit_payloads"
+_raw_retention_days: int = 7
+_raw_max_bytes: int = 1024 * 1024
 
 # Batch write queue (fire-and-forget from callers)
 _write_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
@@ -74,6 +85,18 @@ _ctx_max_retries: contextvars.ContextVar[int] = contextvars.ContextVar(
 _ctx_start_time: contextvars.ContextVar[float] = contextvars.ContextVar(
     "audit_start_time", default=0.0
 )
+_ctx_request_payload: contextvars.ContextVar[Optional[Any]] = contextvars.ContextVar(
+    "audit_request_payload", default=None
+)
+_ctx_request_payload_path: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "audit_request_payload_path", default=None
+)
+_ctx_request_payload_sha256: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "audit_request_payload_sha256", default=None
+)
+_ctx_request_payload_size: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "audit_request_payload_size", default=None
+)
 
 
 def set_audit_context(
@@ -81,6 +104,7 @@ def set_audit_context(
     model: Optional[str] = None,
     streaming: bool = False,
     max_retries: int = 0,
+    request_payload: Optional[Any] = None,
 ) -> str:
     """Set audit context for the current async task. Returns the generated request_id."""
     request_id = generate_request_id()
@@ -91,6 +115,10 @@ def set_audit_context(
     _ctx_streaming.set(streaming)
     _ctx_max_retries.set(max_retries)
     _ctx_start_time.set(time.time())
+    _ctx_request_payload.set(request_payload)
+    _ctx_request_payload_path.set(None)
+    _ctx_request_payload_sha256.set(None)
+    _ctx_request_payload_size.set(None)
     return request_id
 
 
@@ -114,6 +142,10 @@ def get_audit_context() -> Dict[str, Any]:
         "attempt_no": _ctx_attempt_no.get(),
         "max_retries": _ctx_max_retries.get(),
         "start_time": _ctx_start_time.get(),
+        "request_payload": _ctx_request_payload.get(),
+        "request_payload_path": _ctx_request_payload_path.get(),
+        "request_payload_sha256": _ctx_request_payload_sha256.get(),
+        "request_payload_size": _ctx_request_payload_size.get(),
     }
 
 
@@ -124,6 +156,7 @@ def get_audit_context() -> Dict[str, Any]:
 async def init_audit_log(db_path: str) -> None:
     """Create the audit table if needed and start the background writer."""
     global _db_path, _initialized, _writer_task, _enabled
+    global _raw_enabled, _raw_dir, _raw_retention_days, _raw_max_bytes
 
     async with _init_lock:
         if _initialized:
@@ -142,6 +175,42 @@ async def init_audit_log(db_path: str) -> None:
             log.info("[AUDIT] Audit log disabled by config")
             _initialized = True
             return
+
+        # Raw payload storage config
+        raw_enabled_env = os.getenv("AUDIT_RAW_ENABLED")
+        if raw_enabled_env is not None:
+            _raw_enabled = raw_enabled_env.lower() in ("1", "true", "yes", "on")
+        else:
+            raw_enabled_val = await get_config_value("audit_raw_enabled", True)
+            _raw_enabled = bool(raw_enabled_val) if not isinstance(raw_enabled_val, str) else raw_enabled_val.lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+
+        _raw_dir = str(await get_config_value("audit_raw_dir", "./audit_payloads", "AUDIT_RAW_DIR"))
+        retention_val = await get_config_value("audit_raw_retention_days", 7, "AUDIT_RAW_RETENTION_DAYS")
+        max_bytes_val = await get_config_value("audit_raw_max_bytes", 1024 * 1024, "AUDIT_RAW_MAX_BYTES")
+        try:
+            _raw_retention_days = max(1, int(retention_val))
+        except Exception:
+            _raw_retention_days = 7
+        try:
+            _raw_max_bytes = max(1024, int(max_bytes_val))
+        except Exception:
+            _raw_max_bytes = 1024 * 1024
+
+        if _raw_enabled:
+            try:
+                Path(_raw_dir).mkdir(parents=True, exist_ok=True)
+                await _prune_old_raw_files()
+                log.info(
+                    f"[AUDIT] Raw payload capture enabled dir={_raw_dir} retention_days={_raw_retention_days} max_bytes={_raw_max_bytes}"
+                )
+            except Exception as e:
+                log.error(f"[AUDIT] Failed to initialize raw payload directory: {e}")
+                _raw_enabled = False
 
         _db_path = db_path
 
@@ -185,8 +254,12 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
 
             -- Request details
             model_requested     TEXT,
+            model_family        TEXT,
             model_effective     TEXT,
             endpoint_base       TEXT,
+            request_payload_path   TEXT,
+            request_payload_sha256 TEXT,
+            request_payload_size   INTEGER,
             streaming           INTEGER DEFAULT 0,
             attempt_no          INTEGER DEFAULT 0,
             max_retries         INTEGER DEFAULT 0,
@@ -197,11 +270,17 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
             latency_ms          REAL,
             tokens_in           INTEGER,
             tokens_out          INTEGER,
+            cooldown_until_ts   REAL,
+            cooldown_seconds    INTEGER,
+            rate_limit_class    TEXT,
 
             -- Error classification
             error_type          TEXT,
             error_reason        TEXT,
             error_message       TEXT,
+            response_payload_path   TEXT,
+            response_payload_sha256 TEXT,
+            response_payload_size   INTEGER,
 
             -- Ban / validation signals
             ban_signal          INTEGER DEFAULT 0,
@@ -214,6 +293,67 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
             -- Outcome
             outcome             TEXT   -- 'success'|'retry'|'failed'|'banned'|'validation_blocked'|'no_credential'
         )
+    """)
+
+    # Lightweight schema migration for existing DBs
+    await _ensure_column(db, "request_audit", "request_payload_path", "TEXT")
+    await _ensure_column(db, "request_audit", "request_payload_sha256", "TEXT")
+    await _ensure_column(db, "request_audit", "request_payload_size", "INTEGER")
+    await _ensure_column(db, "request_audit", "response_payload_path", "TEXT")
+    await _ensure_column(db, "request_audit", "response_payload_sha256", "TEXT")
+    await _ensure_column(db, "request_audit", "response_payload_size", "INTEGER")
+    await _ensure_column(db, "request_audit", "model_family", "TEXT")
+    await _ensure_column(db, "request_audit", "cooldown_until_ts", "REAL")
+    await _ensure_column(db, "request_audit", "cooldown_seconds", "INTEGER")
+    await _ensure_column(db, "request_audit", "rate_limit_class", "TEXT")
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS quota_windows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at_ts REAL NOT NULL,
+            mode TEXT NOT NULL,
+            credential_filename TEXT NOT NULL,
+            model_family TEXT NOT NULL,
+            window_type TEXT NOT NULL,
+            started_at_ts REAL NOT NULL,
+            reset_at_ts REAL NOT NULL,
+            ended_at_ts REAL,
+            state TEXT NOT NULL DEFAULT 'open',
+            trigger_request_id TEXT,
+            trigger_http_status INTEGER,
+            trigger_error_reason TEXT,
+            blocked_attempts INTEGER NOT NULL DEFAULT 1,
+            last_seen_ts REAL,
+            UNIQUE(mode, credential_filename, model_family, window_type, reset_at_ts)
+        )
+    """)
+
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quota_windows_open
+        ON quota_windows(mode, credential_filename, model_family, window_type, state)
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quota_windows_started
+        ON quota_windows(started_at_ts)
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS usage_hourly (
+            hour_bucket_ts REAL NOT NULL,
+            mode TEXT NOT NULL,
+            credential_filename TEXT NOT NULL,
+            model_family TEXT NOT NULL,
+            requests_total INTEGER NOT NULL DEFAULT 0,
+            requests_ok INTEGER NOT NULL DEFAULT 0,
+            tokens_in INTEGER NOT NULL DEFAULT 0,
+            tokens_out INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour_bucket_ts, mode, credential_filename, model_family)
+        )
+    """)
+
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_usage_hourly_lookup
+        ON usage_hourly(mode, credential_filename, model_family, hour_bucket_ts)
     """)
 
     # Indexes for forensic queries
@@ -243,6 +383,14 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
     """)
 
 
+async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, col_type: str) -> None:
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        rows = await cursor.fetchall()
+    existing = {r[1] for r in rows}
+    if column not in existing:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -257,6 +405,153 @@ def hash_value(value: Optional[str]) -> Optional[str]:
     if not value:
         return None
     return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
+def _detect_model_family(model_name: Optional[str]) -> str:
+    if not model_name:
+        return "unknown"
+    name = str(model_name).lower()
+    if name.startswith("claude-opus"):
+        return "claude_ultra"
+    if name.startswith("claude-"):
+        return "claude_standard"
+    if name.startswith("gemini-"):
+        return "gemini"
+    return "other"
+
+
+def _classify_rate_limit_class(http_status: Optional[int], cooldown_until_ts: Optional[float], ts: float) -> Optional[str]:
+    if http_status != 429 or not cooldown_until_ts:
+        return None
+    delta = float(cooldown_until_ts) - float(ts)
+    if _ROLLING_5H_MIN_SECONDS <= delta <= _ROLLING_5H_MAX_SECONDS:
+        return "rolling_5h"
+    if delta >= _WEEKLY_LIKE_MIN_SECONDS:
+        return "weekly_like"
+    if delta <= 10 * 60:
+        return "short_rate_limit"
+    return "unknown"
+
+
+def _normalize_payload_text(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    try:
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(payload)
+
+
+def _build_raw_relative_path(ts: float, request_id: str, attempt_no: int, kind: str) -> str:
+    dt = datetime.fromtimestamp(ts)
+    safe_req = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in request_id)
+    filename = f"{int(ts)}_{safe_req}_{attempt_no}_{kind}.json"
+    return str(Path(str(dt.year), f"{dt.month:02d}", f"{dt.day:02d}", f"{dt.hour:02d}", filename))
+
+
+async def _write_raw_payload(
+    *,
+    ts: float,
+    request_id: str,
+    attempt_no: int,
+    kind: str,
+    payload: Any,
+) -> Dict[str, Any]:
+    if not _raw_enabled:
+        return {}
+    text = _normalize_payload_text(payload)
+    if not text:
+        return {}
+
+    raw_bytes = text.encode("utf-8", errors="ignore")
+    original_size = len(raw_bytes)
+    if original_size > _raw_max_bytes:
+        raw_bytes = raw_bytes[:_raw_max_bytes]
+        truncated = True
+    else:
+        truncated = False
+
+    sha = hashlib.sha256(raw_bytes).hexdigest()
+    rel_path = _build_raw_relative_path(ts, request_id, attempt_no, kind)
+    full_path = Path(_raw_dir) / rel_path
+
+    payload_obj: Dict[str, Any] = {
+        "request_id": request_id,
+        "attempt_no": attempt_no,
+        "kind": kind,
+        "captured_at": ts,
+        "truncated": truncated,
+        "original_size": original_size,
+        "captured_size": len(raw_bytes),
+        "content": raw_bytes.decode("utf-8", errors="ignore"),
+    }
+    content = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
+
+    def _sync_write() -> None:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(content)
+        try:
+            os.chmod(full_path, 0o600)
+        except Exception:
+            pass
+
+    await asyncio.to_thread(_sync_write)
+    return {
+        "path": rel_path,
+        "sha256": sha,
+        "size": original_size,
+        "truncated": truncated,
+    }
+
+
+async def _prune_old_raw_files() -> None:
+    if not _raw_enabled:
+        return
+    root = Path(_raw_dir)
+    if not root.exists():
+        return
+    cutoff = time.time() - (_raw_retention_days * 86400)
+
+    def _sync_prune() -> int:
+        removed = 0
+        for p in root.rglob("*.json"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink(missing_ok=True)
+                    removed += 1
+            except Exception:
+                continue
+        return removed
+
+    removed_count = await asyncio.to_thread(_sync_prune)
+    if removed_count:
+        log.info(f"[AUDIT] Pruned {removed_count} raw payload files")
+
+
+async def read_raw_artifact(path: str) -> Dict[str, Any]:
+    """Read a raw artifact by relative path under configured raw dir."""
+    if not _raw_enabled:
+        return {"error": "raw capture disabled"}
+    if not path:
+        return {"error": "path required"}
+
+    root = Path(_raw_dir).resolve()
+    target = (root / path).resolve()
+    try:
+        target.relative_to(root)
+    except Exception:
+        return {"error": "invalid path"}
+
+    if not target.exists() or not target.is_file():
+        return {"error": "artifact not found"}
+
+    try:
+        content = await asyncio.to_thread(target.read_text, "utf-8")
+        return {"path": path, "content": json.loads(content)}
+    except Exception as e:
+        return {"error": f"read failed: {e}"}
 
 
 def classify_error(status_code: Optional[int], error_text: str = "") -> Dict[str, Any]:
@@ -365,11 +660,14 @@ async def log_attempt(
     latency_ms: Optional[float] = None,
     tokens_in: Optional[int] = None,
     tokens_out: Optional[int] = None,
+    cooldown_until_ts: Optional[float] = None,
     error_text: str = "",
     tool_count: int = 0,
     has_web_search: bool = False,
     outcome: Optional[str] = None,
     session_id: Optional[str] = None,
+    request_payload: Optional[Any] = None,
+    response_payload: Optional[Any] = None,
 ) -> None:
     """Queue an audit log entry (non-blocking)."""
     if not _enabled:
@@ -383,8 +681,74 @@ async def log_attempt(
             is_retry=(attempt_no > 0 and http_status != 200),
         )
 
+    ts_now = time.time()
+
+    # Attach raw request payload once per request context.
+    request_payload_path = None
+    request_payload_sha256 = None
+    request_payload_size = None
+    response_payload_path = None
+    response_payload_sha256 = None
+    response_payload_size = None
+
+    request_payload_for_write = request_payload
+    if request_payload_for_write is None:
+        request_payload_for_write = _ctx_request_payload.get()
+
+    if _raw_enabled:
+        try:
+            existing_req_path = _ctx_request_payload_path.get()
+            if existing_req_path:
+                request_payload_path = existing_req_path
+                request_payload_sha256 = _ctx_request_payload_sha256.get()
+                request_payload_size = _ctx_request_payload_size.get()
+            elif request_payload_for_write is not None:
+                req_meta = await _write_raw_payload(
+                    ts=ts_now,
+                    request_id=request_id,
+                    attempt_no=attempt_no,
+                    kind="request",
+                    payload=request_payload_for_write,
+                )
+                request_payload_path = req_meta.get("path")
+                request_payload_sha256 = req_meta.get("sha256")
+                request_payload_size = req_meta.get("size")
+                _ctx_request_payload_path.set(request_payload_path)
+                _ctx_request_payload_sha256.set(request_payload_sha256)
+                _ctx_request_payload_size.set(request_payload_size)
+        except Exception as e:
+            log.warning(f"[AUDIT] Failed writing raw request payload: {e}")
+
+        # Per-attempt response/error payload capture.
+        response_payload_for_write = response_payload
+        if response_payload_for_write is None and error_text:
+            response_payload_for_write = error_text
+        if response_payload_for_write is not None:
+            try:
+                resp_meta = await _write_raw_payload(
+                    ts=ts_now,
+                    request_id=request_id,
+                    attempt_no=attempt_no,
+                    kind="response",
+                    payload=response_payload_for_write,
+                )
+                response_payload_path = resp_meta.get("path")
+                response_payload_sha256 = resp_meta.get("sha256")
+                response_payload_size = resp_meta.get("size")
+            except Exception as e:
+                log.warning(f"[AUDIT] Failed writing raw response payload: {e}")
+
+    model_family = _detect_model_family(model_requested or model_effective)
+    rate_limit_class = _classify_rate_limit_class(http_status, cooldown_until_ts, ts_now)
+    cooldown_seconds = None
+    if cooldown_until_ts is not None:
+        try:
+            cooldown_seconds = int(max(0, float(cooldown_until_ts) - ts_now))
+        except Exception:
+            cooldown_seconds = None
+
     row = {
-        "ts": time.time(),
+        "ts": ts_now,
         "request_id": request_id,
         "session_id": session_id,
         "mode": mode,
@@ -395,8 +759,12 @@ async def log_attempt(
         "client_ip_hash": hash_value(client_ip),
         "user_agent_hash": hash_value(user_agent),
         "model_requested": model_requested,
+        "model_family": model_family,
         "model_effective": model_effective,
         "endpoint_base": endpoint_base,
+        "request_payload_path": request_payload_path,
+        "request_payload_sha256": request_payload_sha256,
+        "request_payload_size": request_payload_size,
         "streaming": 1 if streaming else 0,
         "attempt_no": attempt_no,
         "max_retries": max_retries,
@@ -405,9 +773,15 @@ async def log_attempt(
         "latency_ms": latency_ms,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
+        "cooldown_until_ts": cooldown_until_ts,
+        "cooldown_seconds": cooldown_seconds,
+        "rate_limit_class": rate_limit_class,
         "error_type": error_cls.get("error_type"),
         "error_reason": error_cls.get("error_reason"),
         "error_message": error_cls.get("error_message"),
+        "response_payload_path": response_payload_path,
+        "response_payload_sha256": response_payload_sha256,
+        "response_payload_size": response_payload_size,
         "ban_signal": 1 if error_cls.get("ban_signal") else 0,
         "validation_required": 1 if error_cls.get("validation_required") else 0,
         "tool_count": tool_count,
@@ -469,10 +843,12 @@ async def _write_batch(batch: list) -> None:
         "ts", "request_id", "session_id", "mode",
         "credential_filename", "credential_email", "credential_project", "is_ultra",
         "client_ip_hash", "user_agent_hash",
-        "model_requested", "model_effective", "endpoint_base",
+        "model_requested", "model_family", "model_effective", "endpoint_base",
+        "request_payload_path", "request_payload_sha256", "request_payload_size",
         "streaming", "attempt_no", "max_retries", "rotated_credential",
-        "http_status", "latency_ms", "tokens_in", "tokens_out",
+        "http_status", "latency_ms", "tokens_in", "tokens_out", "cooldown_until_ts", "cooldown_seconds", "rate_limit_class",
         "error_type", "error_reason", "error_message",
+        "response_payload_path", "response_payload_sha256", "response_payload_size",
         "ban_signal", "validation_required",
         "tool_count", "has_web_search",
         "outcome",
@@ -488,9 +864,147 @@ async def _write_batch(batch: list) -> None:
             for row in batch:
                 values.append(tuple(row.get(c) for c in columns))
             await db.executemany(sql, values)
+
+            for row in batch:
+                await _update_usage_hourly(db, row)
+                await _update_quota_windows(db, row)
+
             await db.commit()
     except Exception as e:
         log.error(f"[AUDIT] Failed to write {len(batch)} audit rows: {e}")
+
+
+async def _update_quota_windows(db: aiosqlite.Connection, row: Dict[str, Any]) -> None:
+    mode = row.get("mode")
+    credential_filename = row.get("credential_filename")
+    model_family = row.get("model_family") or "unknown"
+    ts = float(row.get("ts") or time.time())
+    http_status = row.get("http_status")
+    rate_limit_class = row.get("rate_limit_class")
+    cooldown_until_ts = row.get("cooldown_until_ts")
+
+    if not mode or not credential_filename:
+        return
+
+    # Close expired windows lazily whenever we see activity for this key.
+    await db.execute(
+        """
+        UPDATE quota_windows
+        SET state='closed', ended_at_ts=COALESCE(ended_at_ts, ?), last_seen_ts=?
+        WHERE mode=? AND credential_filename=? AND model_family=?
+          AND state='open' AND reset_at_ts <= ?
+        """,
+        (ts, ts, mode, credential_filename, model_family, ts),
+    )
+
+    # Open/increment only for rate-limit windows we care about.
+    if http_status != 429 or not cooldown_until_ts:
+        return
+    if rate_limit_class not in ("rolling_5h", "weekly_like"):
+        return
+
+    async with db.execute(
+        """
+        SELECT id, blocked_attempts
+        FROM quota_windows
+        WHERE mode=? AND credential_filename=? AND model_family=? AND window_type=?
+          AND state='open' AND ABS(reset_at_ts - ?) <= 120
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (mode, credential_filename, model_family, rate_limit_class, float(cooldown_until_ts)),
+    ) as cursor:
+        existing = await cursor.fetchone()
+
+    if existing:
+        await db.execute(
+            """
+            UPDATE quota_windows
+            SET blocked_attempts=?, last_seen_ts=?
+            WHERE id=?
+            """,
+            (int(existing[1]) + 1, ts, int(existing[0])),
+        )
+        return
+
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO quota_windows (
+            created_at_ts, mode, credential_filename, model_family, window_type,
+            started_at_ts, reset_at_ts, ended_at_ts, state,
+            trigger_request_id, trigger_http_status, trigger_error_reason,
+            blocked_attempts, last_seen_ts
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'open', ?, ?, ?, 1, ?)
+        """,
+        (
+            ts,
+            mode,
+            credential_filename,
+            model_family,
+            rate_limit_class,
+            ts,
+            float(cooldown_until_ts),
+            row.get("request_id"),
+            http_status,
+            row.get("error_reason") or row.get("error_type"),
+            ts,
+        ),
+    )
+
+
+def _hour_bucket(ts: float) -> float:
+    return float(int(ts // 3600) * 3600)
+
+
+async def _update_usage_hourly(db: aiosqlite.Connection, row: Dict[str, Any]) -> None:
+    mode = row.get("mode")
+    credential_filename = row.get("credential_filename")
+    if not mode or not credential_filename:
+        return
+
+    ts = float(row.get("ts") or time.time())
+    bucket = _hour_bucket(ts)
+    model_family = row.get("model_family") or _detect_model_family(row.get("model_requested"))
+    status = row.get("http_status")
+
+    req_total_inc = 1
+    req_ok_inc = 1 if status == 200 else 0
+
+    tokens_in = row.get("tokens_in")
+    tokens_out = row.get("tokens_out")
+    try:
+        tokens_in_inc = int(tokens_in) if tokens_in is not None else 0
+    except Exception:
+        tokens_in_inc = 0
+    try:
+        tokens_out_inc = int(tokens_out) if tokens_out is not None else 0
+    except Exception:
+        tokens_out_inc = 0
+
+    await db.execute(
+        """
+        INSERT INTO usage_hourly (
+            hour_bucket_ts, mode, credential_filename, model_family,
+            requests_total, requests_ok, tokens_in, tokens_out
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(hour_bucket_ts, mode, credential_filename, model_family)
+        DO UPDATE SET
+            requests_total = requests_total + excluded.requests_total,
+            requests_ok = requests_ok + excluded.requests_ok,
+            tokens_in = tokens_in + excluded.tokens_in,
+            tokens_out = tokens_out + excluded.tokens_out
+        """,
+        (
+            bucket,
+            mode,
+            credential_filename,
+            model_family,
+            req_total_inc,
+            req_ok_inc,
+            tokens_in_inc,
+            tokens_out_inc,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +1101,8 @@ async def query_credential_timeline(
     sql = """
         SELECT ts, request_id, model_requested, http_status, outcome,
                error_type, error_reason, ban_signal, validation_required,
-               attempt_no, rotated_credential, latency_ms
+               attempt_no, rotated_credential, latency_ms,
+               request_payload_path, response_payload_path
         FROM request_audit
         WHERE credential_filename = ? AND ts >= ?
         ORDER BY ts ASC
@@ -636,3 +1151,177 @@ async def get_stats(since_hours: float = 24) -> dict:
     except Exception as e:
         log.error(f"[AUDIT] Stats query failed: {e}")
         return {"enabled": True, "error": str(e)}
+
+
+async def query_quota_windows(
+    since_days: float = 30,
+    window_type: Optional[str] = None,
+    mode: Optional[str] = None,
+    credential: Optional[str] = None,
+    model_family: Optional[str] = None,
+    state: Optional[str] = None,
+    limit: int = 200,
+) -> list:
+    if not _enabled or not _db_path:
+        return []
+
+    conditions = ["started_at_ts >= ?"]
+    params: list[Any] = [time.time() - since_days * 86400]
+    if window_type:
+        conditions.append("window_type = ?")
+        params.append(window_type)
+    if mode:
+        conditions.append("mode = ?")
+        params.append(mode)
+    if credential:
+        conditions.append("credential_filename = ?")
+        params.append(credential)
+    if model_family:
+        conditions.append("model_family = ?")
+        params.append(model_family)
+    if state:
+        conditions.append("state = ?")
+        params.append(state)
+
+    sql = f"""
+        SELECT *
+        FROM quota_windows
+        WHERE {' AND '.join(conditions)}
+        ORDER BY started_at_ts DESC
+        LIMIT ?
+    """
+    params.append(limit)
+
+    try:
+        async with aiosqlite.connect(_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+    except Exception as e:
+        log.error(f"[AUDIT] Quota windows query failed: {e}")
+        return []
+
+
+async def query_quota_weekly_hits(
+    weeks: int = 12,
+    mode: Optional[str] = None,
+    model_family: Optional[str] = None,
+) -> list:
+    if not _enabled or not _db_path:
+        return []
+
+    since = time.time() - max(1, weeks) * 7 * 86400
+    conditions = ["started_at_ts >= ?"]
+    params: list[Any] = [since]
+    if mode:
+        conditions.append("mode = ?")
+        params.append(mode)
+    if model_family:
+        conditions.append("model_family = ?")
+        params.append(model_family)
+
+    sql = f"""
+        SELECT
+            strftime('%Y-W%W', datetime(started_at_ts, 'unixepoch')) AS week_utc,
+            mode,
+            model_family,
+            credential_filename,
+            SUM(CASE WHEN window_type = 'rolling_5h' THEN 1 ELSE 0 END) AS rolling_5h_hits,
+            SUM(CASE WHEN window_type = 'weekly_like' THEN 1 ELSE 0 END) AS weekly_like_hits,
+            COUNT(*) AS total_hits
+        FROM quota_windows
+        WHERE {' AND '.join(conditions)}
+        GROUP BY week_utc, mode, model_family, credential_filename
+        ORDER BY week_utc DESC, total_hits DESC
+    """
+
+    try:
+        async with aiosqlite.connect(_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+    except Exception as e:
+        log.error(f"[AUDIT] Weekly quota hits query failed: {e}")
+        return []
+
+
+async def query_quota_prehit_usage(
+    since_days: float = 30,
+    lookback_hours: float = 5,
+    window_type: str = "rolling_5h",
+    mode: Optional[str] = None,
+    credential: Optional[str] = None,
+    model_family: Optional[str] = None,
+    limit: int = 200,
+) -> list:
+    """For each quota window hit, return usage aggregated before the hit."""
+    if not _enabled or not _db_path:
+        return []
+
+    since = time.time() - max(1.0, since_days) * 86400
+    lb_seconds = max(1.0, lookback_hours) * 3600
+
+    conditions = ["qw.started_at_ts >= ?", "qw.window_type = ?"]
+    params: list[Any] = [since, window_type]
+    if mode:
+        conditions.append("qw.mode = ?")
+        params.append(mode)
+    if credential:
+        conditions.append("qw.credential_filename = ?")
+        params.append(credential)
+    if model_family:
+        conditions.append("qw.model_family = ?")
+        params.append(model_family)
+
+    sql = f"""
+        SELECT
+            qw.id,
+            qw.mode,
+            qw.credential_filename,
+            qw.model_family,
+            qw.window_type,
+            qw.started_at_ts,
+            qw.reset_at_ts,
+            qw.blocked_attempts,
+            qw.trigger_request_id,
+            qw.trigger_error_reason,
+            COALESCE(SUM(uh.requests_total), 0) AS prehit_requests_total,
+            COALESCE(SUM(uh.requests_ok), 0) AS prehit_requests_ok,
+            COALESCE(SUM(uh.tokens_in), 0) AS prehit_tokens_in,
+            COALESCE(SUM(uh.tokens_out), 0) AS prehit_tokens_out
+        FROM quota_windows qw
+        LEFT JOIN usage_hourly uh
+          ON uh.mode = qw.mode
+         AND uh.credential_filename = qw.credential_filename
+         AND uh.model_family = qw.model_family
+         AND uh.hour_bucket_ts >= (qw.started_at_ts - ?)
+         AND uh.hour_bucket_ts < qw.started_at_ts
+        WHERE {' AND '.join(conditions)}
+        GROUP BY
+            qw.id,
+            qw.mode,
+            qw.credential_filename,
+            qw.model_family,
+            qw.window_type,
+            qw.started_at_ts,
+            qw.reset_at_ts,
+            qw.blocked_attempts,
+            qw.trigger_request_id,
+            qw.trigger_error_reason
+        ORDER BY qw.started_at_ts DESC
+        LIMIT ?
+    """
+
+    query_params = [lb_seconds, *params, limit]
+
+    try:
+        async with aiosqlite.connect(_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, query_params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+    except Exception as e:
+        log.error(f"[AUDIT] Pre-hit quota usage query failed: {e}")
+        return []

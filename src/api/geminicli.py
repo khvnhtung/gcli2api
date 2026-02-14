@@ -136,7 +136,7 @@ async def stream_request(
     model_group = get_model_group(model_name)
 
     # Set up audit context for this request
-    set_audit_context(mode="geminicli", model=model_name, streaming=True)
+    set_audit_context(mode="geminicli", model=model_name, streaming=True, request_payload=body)
 
     # 1. 获取有效凭证
     cred_result = await credential_manager.get_valid_credential(
@@ -274,7 +274,8 @@ async def stream_request(
 
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
-                            cooldown_until, mode="geminicli", model_key=model_group
+                            cooldown_until, mode="geminicli", model_key=model_group,
+                            error_text=error_body or "",
                         )
 
                         # 检查是否应该重试
@@ -297,7 +298,8 @@ async def stream_request(
                         log.error(f"[GEMINICLI STREAM] 流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
-                            None, mode="geminicli", model_key=model_group
+                            None, mode="geminicli", model_key=model_group,
+                            error_text=error_body or "",
                         )
                         yield chunk
                         return
@@ -415,7 +417,7 @@ async def non_stream_request(
     model_group = get_model_group(model_name)
 
     # Set up audit context for this request (non-streaming path)
-    set_audit_context(mode="geminicli", model=model_name, streaming=False)
+    set_audit_context(mode="geminicli", model=model_name, streaming=False, request_payload=body)
 
     # 1. 获取有效凭证
     cred_result = await credential_manager.get_valid_credential(
@@ -555,7 +557,8 @@ async def non_stream_request(
                 # 记录错误并禁用凭证
                 await record_api_call_error(
                     credential_manager, current_file, status_code,
-                    None, mode="geminicli", model_key=model_group
+                    None, mode="geminicli", model_key=model_group,
+                    error_text=error_text or "",
                 )
                 # Auto-ban: disable credential on DISABLE_ERROR_CODES
                 if await check_should_auto_ban(status_code):
@@ -627,7 +630,8 @@ async def non_stream_request(
 
                 await record_api_call_error(
                     credential_manager, current_file, status_code,
-                    cooldown_until, mode="geminicli", model_key=model_group
+                    cooldown_until, mode="geminicli", model_key=model_group,
+                    error_text=error_text or "",
                 )
 
                 # 检查是否应该重试

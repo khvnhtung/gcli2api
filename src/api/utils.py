@@ -317,6 +317,7 @@ async def record_api_call_error(
                 max_retries=ctx.get("max_retries", 0),
                 http_status=status_code,
                 latency_ms=(time.time() - ctx["start_time"]) * 1000 if ctx.get("start_time") else None,
+                cooldown_until_ts=cooldown_until,
                 error_text=error_text,
             )
     except Exception:

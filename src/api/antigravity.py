@@ -272,7 +272,7 @@ async def stream_request(
     model_name = body.get("model", "")
 
     # Set up audit context for this request
-    set_audit_context(mode="antigravity", model=model_name, streaming=True)
+    set_audit_context(mode="antigravity", model=model_name, streaming=True, request_payload=body)
 
     def _is_safety_settings_error(text: str) -> bool:
         t = (text or "").lower()
@@ -468,6 +468,7 @@ async def stream_request(
                             cooldown_until,
                             mode="antigravity",
                             model_key=model_name,
+                            error_text=error_body or "",
                         )
 
                         if attempt < max_retries:
@@ -648,6 +649,7 @@ async def stream_request(
                             parsed_until,
                             mode="antigravity",
                             model_key=model_name,
+                            error_text=error_body or "",
                         )
                         need_retry = attempt < max_retries
                         if need_retry:
@@ -716,7 +718,8 @@ async def stream_request(
 
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
-                            cooldown_until, mode="antigravity", model_key=model_name
+                            cooldown_until, mode="antigravity", model_key=model_name,
+                            error_text=error_body or "",
                         )
                         # Auto-ban: disable credential on DISABLE_ERROR_CODES
                         if await check_should_auto_ban(status_code):
@@ -749,7 +752,8 @@ async def stream_request(
                         _log_payload_debug("ANTIGRAVITY STREAM", final_payload, status_code, current_file)
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
-                            None, mode="antigravity", model_key=model_name
+                            None, mode="antigravity", model_key=model_name,
+                            error_text=error_body or "",
                         )
                         yield chunk
                         return
@@ -796,7 +800,8 @@ async def stream_request(
                 last_status_code_for_retry = 200
                 await record_api_call_error(
                     credential_manager, current_file, 200,
-                    None, mode="antigravity", model_key=model_name
+                    None, mode="antigravity", model_key=model_name,
+                    error_text="empty_response",
                 )
                 
                 if attempt < max_retries:
@@ -933,7 +938,7 @@ async def non_stream_request(
     model_name = body.get("model", "")
 
     # Set up audit context for this request (non-streaming path)
-    set_audit_context(mode="antigravity", model=model_name, streaming=False)
+    set_audit_context(mode="antigravity", model=model_name, streaming=False, request_payload=body)
 
     # Track tried credentials for this request to avoid repeatedly hitting
     # the same rate-limited/denied account when retrying.
@@ -1072,7 +1077,8 @@ async def non_stream_request(
                     # 记录错误
                     await record_api_call_error(
                         credential_manager, current_file, 200,
-                        None, mode="antigravity", model_key=model_name
+                        None, mode="antigravity", model_key=model_name,
+                        error_text="empty_response",
                     )
                     
                     if attempt < max_retries:
@@ -1144,6 +1150,7 @@ async def non_stream_request(
                         cooldown_until,
                         mode="antigravity",
                         model_key=model_name,
+                        error_text=error_text or "",
                     )
 
                     if attempt < max_retries:
@@ -1290,6 +1297,7 @@ async def non_stream_request(
                         parsed_until,
                         mode="antigravity",
                         model_key=model_name,
+                        error_text=error_text or "",
                     )
                     if attempt < max_retries:
                         # Preheat next credential for fast failover.
@@ -1365,7 +1373,8 @@ async def non_stream_request(
 
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
-                        cooldown_until, mode="antigravity", model_key=model_name
+                        cooldown_until, mode="antigravity", model_key=model_name,
+                        error_text=error_text or "",
                     )
                     # Auto-ban: disable credential on DISABLE_ERROR_CODES
                     if await check_should_auto_ban(status_code):
@@ -1396,7 +1405,8 @@ async def non_stream_request(
                     _log_payload_debug("ANTIGRAVITY NON-STREAM", final_payload, status_code, current_file)
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
-                        None, mode="antigravity", model_key=model_name
+                        None, mode="antigravity", model_key=model_name,
+                        error_text=error_text or "",
                     )
                     return last_error_response
             

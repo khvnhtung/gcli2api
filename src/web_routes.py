@@ -2192,3 +2192,107 @@ async def api_audit_recent(
             status_code=500,
             content={"error": str(e)}
         )
+
+
+@router.get("/api/audit/raw")
+async def api_audit_raw(
+    request: Request,
+    path: str = "",
+    _=Depends(verify_panel_token),
+):
+    """Fetch one raw request/response artifact by relative path."""
+    if not path:
+        return JSONResponse(status_code=400, content={"error": "path parameter required"})
+    try:
+        from src.audit_log import read_raw_artifact
+
+        result = await read_raw_artifact(path)
+        status_code = 200 if "error" not in result else 404
+        return JSONResponse(status_code=status_code, content=result)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+@router.get("/api/audit/quota/windows")
+async def api_audit_quota_windows(
+    request: Request,
+    since_days: float = 30,
+    window_type: str = "",
+    mode: str = "",
+    credential: str = "",
+    model_family: str = "",
+    state: str = "",
+    limit: int = 200,
+    _=Depends(verify_panel_token),
+):
+    """Query deduplicated quota hit windows (UTC-based)."""
+    try:
+        from src.audit_log import query_quota_windows
+
+        windows = await query_quota_windows(
+            since_days=since_days,
+            window_type=window_type or None,
+            mode=mode or None,
+            credential=credential or None,
+            model_family=model_family or None,
+            state=state or None,
+            limit=limit,
+        )
+        return JSONResponse(content={"windows": windows, "count": len(windows)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.get("/api/audit/quota/weekly")
+async def api_audit_quota_weekly(
+    request: Request,
+    weeks: int = 12,
+    mode: str = "",
+    model_family: str = "",
+    _=Depends(verify_panel_token),
+):
+    """Weekly quota-hit aggregates in UTC (per mode/family/credential)."""
+    try:
+        from src.audit_log import query_quota_weekly_hits
+
+        rows = await query_quota_weekly_hits(
+            weeks=weeks,
+            mode=mode or None,
+            model_family=model_family or None,
+        )
+        return JSONResponse(content={"rows": rows, "count": len(rows)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.get("/api/audit/quota/prehit-usage")
+async def api_audit_quota_prehit_usage(
+    request: Request,
+    since_days: float = 30,
+    lookback_hours: float = 5,
+    window_type: str = "rolling_5h",
+    mode: str = "",
+    credential: str = "",
+    model_family: str = "",
+    limit: int = 200,
+    _=Depends(verify_panel_token),
+):
+    """Usage totals in the lookback window before each quota hit."""
+    try:
+        from src.audit_log import query_quota_prehit_usage
+
+        rows = await query_quota_prehit_usage(
+            since_days=since_days,
+            lookback_hours=lookback_hours,
+            window_type=window_type,
+            mode=mode or None,
+            credential=credential or None,
+            model_family=model_family or None,
+            limit=limit,
+        )
+        return JSONResponse(content={"rows": rows, "count": len(rows)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
