@@ -37,6 +37,9 @@ from src.converter.thinking_recovery import (
 DEFAULT_TEMPERATURE = 0.4
 _DEBUG_TRUE = {"1", "true", "yes", "on"}
 
+# Tool names that map to Gemini's native googleSearch
+WEB_SEARCH_PATTERNS = {"web_search", "google_search", "google_search_retrieval"}
+
 # ============================================================================
 # Thinking 块验证和清理
 # ============================================================================
@@ -724,9 +727,21 @@ def _clean_schema_recursive(schema: Any) -> bool:
             else:
                 del schema["required"]
 
-        # Ensure type is set if properties exist
-        if "properties" in schema and "type" not in schema:
+        # Ensure type is "object" when properties are present.
+        # Gemini rejects properties on non-OBJECT types.
+        # This can happen when anyOf/oneOf merging or $ref resolution
+        # brings in properties but leaves type as "string"/"array"/etc.
+        if "properties" in schema and schema.get("type") != "object":
             schema["type"] = "object"
+
+        # Strip "required" from non-object types (e.g. stray from anyOf merge)
+        if "required" in schema and schema.get("type") != "object":
+            del schema["required"]
+
+        # Gemini requires arrays to always define their items.
+        # After anyOf merging or $ref flattening, items can be missing.
+        if schema.get("type") == "array" and "items" not in schema:
+            schema["items"] = {"type": "string"}
 
         # Convert enum values to strings
         if "enum" in schema and isinstance(schema["enum"], list):
@@ -811,7 +826,6 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
         # Anthropic web_search tool → Gemini googleSearch
         # Anthropic format: {"type": "web_search_20250305", "name": "web_search", ...}
         # Also check for name-based detection (some clients use name instead of type)
-        WEB_SEARCH_PATTERNS = {"web_search", "google_search", "google_search_retrieval"}
         if tool_type.startswith("web_search") or tool_name in WEB_SEARCH_PATTERNS:
             has_google_search = True
             log.info(f"[TOOLS] Mapping Anthropic web_search tool to Gemini googleSearch (type={tool_type}, name={tool_name})")
@@ -820,6 +834,7 @@ def convert_tools(anthropic_tools: Optional[List[Dict[str, Any]]]) -> Optional[L
         name = tool.get("name", "nameless_function")
         description = tool.get("description", "")
         input_schema = tool.get("input_schema", {}) or {}
+
         parameters = clean_json_schema(input_schema)
 
         function_declarations.append(

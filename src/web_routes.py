@@ -11,7 +11,7 @@ import os
 import time
 import zipfile
 from collections import deque
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -47,7 +47,7 @@ from .models import (
     ConfigSaveRequest,
 )
 from src.storage_adapter import get_storage_adapter
-from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, ANTIGRAVITY_USER_AGENT
+from src.utils import verify_panel_token, authenticate_bearer, GEMINICLI_USER_AGENT, ANTIGRAVITY_USER_AGENT
 from src.api.antigravity import fetch_quota_info
 from src.google_oauth_api import Credentials, fetch_project_id
 from config import get_code_assist_endpoint, get_antigravity_api_url
@@ -1107,6 +1107,26 @@ async def creds_action(
                 log.error(f"删除凭证 {filename} 时出错: {e}")
                 raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
 
+        elif action == "set_ultra":
+            log.info(f"Web请求: 设置ultra {filename} (mode={mode})")
+            result = await storage_adapter.update_credential_state(
+                filename, {"is_ultra": 1}, mode=mode
+            )
+            if result:
+                return JSONResponse(content={"message": f"已设置 {os.path.basename(filename)} 为 ultra"})
+            else:
+                raise HTTPException(status_code=500, detail="设置ultra失败")
+
+        elif action == "unset_ultra":
+            log.info(f"Web请求: 取消ultra {filename} (mode={mode})")
+            result = await storage_adapter.update_credential_state(
+                filename, {"is_ultra": 0}, mode=mode
+            )
+            if result:
+                return JSONResponse(content={"message": f"已取消 {os.path.basename(filename)} 的 ultra"})
+            else:
+                raise HTTPException(status_code=500, detail="取消ultra失败")
+
         else:
             raise HTTPException(status_code=400, detail="无效的操作类型")
 
@@ -1940,3 +1960,235 @@ async def get_version_info(check_update: bool = False):
             "success": False,
             "error": str(e)
         })
+
+
+# =============================================================================
+# Aggregated Quota Endpoint (for statusline clients)
+# =============================================================================
+
+_quota_cache: Dict = {}
+_quota_cache_lock = asyncio.Lock()
+QUOTA_CACHE_TTL_SECONDS = 60
+
+
+async def _fetch_single_credential_quota(
+    filename: str, storage_adapter, mode: str = "antigravity"
+) -> Optional[Dict[str, Any]]:
+    """Fetch quota for a single credential, refreshing token if needed."""
+    try:
+        credential_data = await storage_adapter.get_credential(filename, mode=mode)
+        if not credential_data:
+            return None
+
+        creds = Credentials.from_dict(credential_data)
+        refreshed = await creds.refresh_if_needed()
+        if refreshed:
+            updated = creds.to_dict()
+            await storage_adapter.store_credential(filename, updated, mode=mode)
+            credential_data = updated
+
+        access_token = credential_data.get("access_token") or credential_data.get("token")
+        if not access_token:
+            return None
+
+        quota_result = await fetch_quota_info(access_token)
+        if quota_result.get("success"):
+            return quota_result.get("models", {})
+    except Exception as e:
+        log.debug(f"[QUOTA] Failed to fetch quota for {filename}: {e}")
+    return None
+
+
+@router.get("/api/quota")
+async def get_aggregated_quota(token: str = Depends(authenticate_bearer)):
+    """
+    Aggregated quota across all antigravity credentials.
+    For each model, returns the best (highest) remaining percentage.
+    Results are cached server-side for QUOTA_CACHE_TTL_SECONDS.
+    """
+    global _quota_cache
+
+    now = time.time()
+    async with _quota_cache_lock:
+        if _quota_cache and (now - _quota_cache.get("_ts", 0)) < QUOTA_CACHE_TTL_SECONDS:
+            cache_age = int(now - _quota_cache["_ts"])
+            result = {k: v for k, v in _quota_cache.items() if not k.startswith("_")}
+            return JSONResponse(content={
+                "success": True,
+                "cached": True,
+                "cache_age_seconds": cache_age,
+                "models": result,
+            })
+
+    try:
+        storage_adapter = await get_storage_adapter()
+        all_creds = await storage_adapter.list_credentials(mode="antigravity")
+
+        # Check credential states to know which are disabled
+        all_states = await storage_adapter.get_all_credential_states(mode="antigravity")
+
+        enabled_creds = []
+        for f in all_creds:
+            state = all_states.get(f, {})
+            if not state.get("disabled", False):
+                enabled_creds.append(f)
+
+        # Fetch quota from all enabled credentials in parallel
+        tasks = [
+            _fetch_single_credential_quota(f, storage_adapter)
+            for f in enabled_creds
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Aggregate: for each model, take the best remaining fraction
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        for i, result in enumerate(results):
+            if isinstance(result, Exception) or result is None:
+                continue
+            for model_id, model_quota in result.items():
+                remaining = model_quota.get("remaining", 0)
+
+                if model_id not in aggregated:
+                    aggregated[model_id] = {
+                        "remaining": 0,
+                        "resetTime": "N/A",
+                        "resetTimeRaw": "",
+                        "_cred_available": 0,
+                        "_cred_total": 0,
+                    }
+
+                entry = aggregated[model_id]
+
+                # Keep the best (highest) remaining fraction
+                if remaining > entry["remaining"]:
+                    entry["remaining"] = remaining
+                    entry["resetTime"] = model_quota.get("resetTime", "N/A")
+                    entry["resetTimeRaw"] = model_quota.get("resetTimeRaw", "")
+
+                entry["_cred_total"] += 1
+                if remaining > 0:
+                    entry["_cred_available"] += 1
+
+        # Build response
+        models_response = {}
+        for model_id, data in aggregated.items():
+            remaining = data.get("remaining", 0)
+            models_response[model_id] = {
+                "remaining_pct": int(remaining * 100),
+                "reset_time": data.get("resetTime", "N/A"),
+                "reset_time_raw": data.get("resetTimeRaw", ""),
+                "credentials_available": data.get("_cred_available", 0),
+                "credentials_total": data.get("_cred_total", 0),
+            }
+
+        # Update cache
+        async with _quota_cache_lock:
+            _quota_cache = dict(models_response)
+            _quota_cache["_ts"] = time.time()
+
+        return JSONResponse(content={
+            "success": True,
+            "cached": False,
+            "cache_age_seconds": 0,
+            "models": models_response,
+        })
+
+    except Exception as e:
+        log.error(f"[QUOTA] Aggregated quota fetch failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+# ==================== Audit Log Endpoints ====================
+
+@router.get("/api/audit/stats")
+async def api_audit_stats(
+    request: Request,
+    since_hours: float = 24,
+    _=Depends(verify_panel_token),
+):
+    """Get aggregate audit stats for a time window."""
+    try:
+        from src.audit_log import get_stats
+        stats = await get_stats(since_hours=since_hours)
+        return JSONResponse(content=stats)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+@router.get("/api/audit/incidents")
+async def api_audit_incidents(
+    request: Request,
+    since_hours: float = 72,
+    _=Depends(verify_panel_token),
+):
+    """Get ban/validation incidents grouped by credential."""
+    try:
+        from src.audit_log import query_incidents
+        incidents = await query_incidents(since_hours=since_hours)
+        return JSONResponse(content={"incidents": incidents})
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+@router.get("/api/audit/timeline")
+async def api_audit_timeline(
+    request: Request,
+    credential: str = "",
+    since_hours: float = 48,
+    _=Depends(verify_panel_token),
+):
+    """Get chronological event history for a single credential."""
+    if not credential:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "credential parameter required"}
+        )
+    try:
+        from src.audit_log import query_credential_timeline
+        events = await query_credential_timeline(
+            credential_filename=credential,
+            since_hours=since_hours,
+        )
+        return JSONResponse(content={"credential": credential, "events": events})
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+@router.get("/api/audit/recent")
+async def api_audit_recent(
+    request: Request,
+    limit: int = 100,
+    credential: str = "",
+    status: int = 0,
+    outcome: str = "",
+    since_hours: float = 24,
+    _=Depends(verify_panel_token),
+):
+    """Query recent audit entries with optional filters."""
+    try:
+        from src.audit_log import query_recent
+        entries = await query_recent(
+            limit=limit,
+            credential=credential or None,
+            status=status if status > 0 else None,
+            outcome=outcome or None,
+            since_hours=since_hours,
+        )
+        return JSONResponse(content={"entries": entries, "count": len(entries)})
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )

@@ -37,6 +37,7 @@ ENV_MAPPINGS = {
     "RETRY_429_INTERVAL": "retry_429_interval",
     "ANTI_TRUNCATION_MAX_ATTEMPTS": "anti_truncation_max_attempts",
     "ENTITLEMENT_403_MODEL_COOLDOWN_SECONDS": "entitlement_403_model_cooldown_seconds",
+    "MODEL_NOT_FOUND_404_MODEL_COOLDOWN_SECONDS": "model_not_found_404_model_cooldown_seconds",
     "LONG_QUOTA_COOLDOWN_ROTATE_THRESHOLD_SECONDS": "long_quota_cooldown_rotate_threshold_seconds",
     "RETRY_ROTATE_DELAY_MS": "retry_rotate_delay_ms",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
@@ -53,6 +54,10 @@ ENV_MAPPINGS = {
     "POOL_WAIT_ENABLED": "pool_wait_enabled",
     "POOL_WAIT_MAX_SECONDS": "pool_wait_max_seconds",
     "POOL_WAIT_POLL_SECONDS": "pool_wait_poll_seconds",
+
+    # Audit log
+    "AUDIT_LOG_ENABLED": "audit_log_enabled",
+
     "HOST": "host",
     "PORT": "port",
     "API_PASSWORD": "api_password",
@@ -100,6 +105,9 @@ async def build_effective_config_for_panel() -> tuple[dict[str, Any], set[str]]:
     current_config["retry_429_max_retries"] = await get_retry_429_max_retries()
     current_config["retry_429_enabled"] = await get_retry_429_enabled()
     current_config["retry_429_interval"] = await get_retry_429_interval()
+    current_config["model_not_found_404_model_cooldown_seconds"] = (
+        await get_model_not_found_404_model_cooldown_seconds()
+    )
     current_config["anti_truncation_max_attempts"] = await get_anti_truncation_max_attempts()
     current_config["compatibility_mode_enabled"] = await get_compatibility_mode_enabled()
     current_config["return_thoughts_to_frontend"] = await get_return_thoughts_to_frontend()
@@ -309,6 +317,27 @@ async def get_entitlement_403_model_cooldown_seconds() -> int:
             pass
 
     return int(await get_config_value("entitlement_403_model_cooldown_seconds", 7 * 24 * 3600))
+
+
+async def get_model_not_found_404_model_cooldown_seconds() -> int:
+    """Cooldown seconds for model-scoped 404 NOT_FOUND credential failures.
+
+    Used when upstream returns model-serving 404 (for example, credential does not
+    have access to a requested model). The cooldown is applied per model_key so the
+    credential can still serve other models.
+
+    Environment variable: MODEL_NOT_FOUND_404_MODEL_COOLDOWN_SECONDS
+    Database config key: model_not_found_404_model_cooldown_seconds
+    Default: 3600 seconds (1 hour)
+    """
+    env_value = os.getenv("MODEL_NOT_FOUND_404_MODEL_COOLDOWN_SECONDS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+
+    return int(await get_config_value("model_not_found_404_model_cooldown_seconds", 3600))
 
 
 async def get_long_quota_cooldown_rotate_threshold_seconds() -> int:
@@ -652,3 +681,27 @@ async def get_antigravity_api_url() -> str:
             "ANTIGRAVITY_API_URL",
         )
     )
+
+
+# Cloud Code v1internal endpoints (fallback order: Sandbox → Daily → Prod)
+# Matches Antigravity-Manager's multi-endpoint fallback strategy.
+ANTIGRAVITY_ENDPOINT_FALLBACKS = [
+    "https://daily-cloudcode-pa.sandbox.googleapis.com",  # Sandbox (default)
+    "https://daily-cloudcode-pa.googleapis.com",           # Daily
+    "https://cloudcode-pa.googleapis.com",                 # Prod
+]
+
+
+async def get_antigravity_endpoint_fallbacks() -> list:
+    """
+    Get list of Antigravity API endpoints to try in order.
+
+    If the user has configured a custom ANTIGRAVITY_API_URL, it will be
+    placed first in the list (deduped if it matches a default endpoint).
+    """
+    configured = await get_antigravity_api_url()
+    endpoints = [configured]
+    for ep in ANTIGRAVITY_ENDPOINT_FALLBACKS:
+        if ep != configured:
+            endpoints.append(ep)
+    return endpoints

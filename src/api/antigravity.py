@@ -14,9 +14,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import Response
 from config import (
     get_antigravity_api_url,
+    get_antigravity_endpoint_fallbacks,
     get_antigravity_stream2nostream,
     get_auto_ban_error_codes,
     get_entitlement_403_model_cooldown_seconds,
+    get_model_not_found_404_model_cooldown_seconds,
     get_long_quota_cooldown_rotate_threshold_seconds,
     get_retry_rotate_delay_ms,
     get_pool_wait_enabled,
@@ -48,6 +50,8 @@ from src.api.utils import (
 from src.api.quota_refresh import fetch_realtime_quota_reset_timestamp
 
 from src.google_oauth_api import Credentials, fetch_project_id
+
+from src.audit_log import set_audit_context, increment_audit_attempt
 
 
 def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
@@ -81,7 +85,139 @@ from src.api.retry_strategy import (
 # 使用全局单例 credential_manager，自动初始化
 
 
+# ==================== 多端点降级 (Multi-endpoint fallback) ====================
+
+def _should_try_next_endpoint(status_code: int) -> bool:
+    """Whether to try the next endpoint on this status code.
+    Matches Antigravity-Manager's should_try_next_endpoint logic."""
+    return status_code in (429, 408, 404) or 500 <= status_code < 600
+
+
+def _is_model_not_found_404(status_code: int, error_text: str) -> bool:
+    """Detect model-not-found 404s that should fail over to another credential.
+
+    We only classify explicit upstream model lookup failures, not generic 404s.
+    """
+    if status_code != 404:
+        return False
+
+    lower = (error_text or "").lower()
+    if not lower:
+        return False
+
+    return (
+        "requested entity was not found" in lower
+        or '"status": "not_found"' in lower
+        or '"status":"not_found"' in lower
+    )
+
+
+async def _stream_with_endpoint_fallback(
+    endpoints: list,
+    method_path: str,
+    body: dict,
+    native: bool,
+    headers: dict,
+):
+    """Try each endpoint sequentially, yield chunks from the first that succeeds.
+
+    If the first chunk is an error Response with a fallback-eligible status code,
+    try the next endpoint. Otherwise yield all chunks from that endpoint.
+    """
+    last_error_chunk = None
+
+    for idx, endpoint in enumerate(endpoints):
+        url = f"{endpoint}/{method_path}"
+        has_next = idx + 1 < len(endpoints)
+        fell_through = False
+
+        async for chunk in stream_post_async(url=url, body=body, native=native, headers=headers):
+            if isinstance(chunk, Response) and has_next and _should_try_next_endpoint(chunk.status_code):
+                log.warning(
+                    f"[ENDPOINT FALLBACK] {endpoint} returned {chunk.status_code}, "
+                    f"trying next endpoint ({idx + 2}/{len(endpoints)})"
+                )
+                last_error_chunk = chunk
+                fell_through = True
+                break
+            else:
+                yield chunk
+
+        if not fell_through:
+            return
+
+    # All endpoints exhausted — yield last error so caller's retry loop can handle it
+    if last_error_chunk:
+        yield last_error_chunk
+
+
+async def _post_with_endpoint_fallback(
+    endpoints: list,
+    method_path: str,
+    json_body: dict,
+    headers: dict,
+    timeout: float = 300.0,
+):
+    """Try each endpoint for a non-streaming POST, return first success or last error."""
+    last_response = None
+
+    for idx, endpoint in enumerate(endpoints):
+        url = f"{endpoint}/{method_path}"
+        has_next = idx + 1 < len(endpoints)
+
+        response = await post_async(url=url, json=json_body, headers=headers, timeout=timeout)
+
+        if response.status_code == 200:
+            if idx > 0:
+                log.info(
+                    f"[ENDPOINT FALLBACK] Succeeded on endpoint {idx + 1}/{len(endpoints)}: {endpoint}"
+                )
+            return response
+
+        if has_next and _should_try_next_endpoint(response.status_code):
+            log.warning(
+                f"[ENDPOINT FALLBACK] {endpoint} returned {response.status_code}, "
+                f"trying next endpoint ({idx + 2}/{len(endpoints)})"
+            )
+            last_response = response
+            continue
+
+        return response  # Non-retryable at endpoint level
+
+    return last_response
+
+
 # ==================== 辅助函数 ====================
+
+
+def _log_payload_debug(label: str, payload: dict, status_code: int = 0, credential: str = ""):
+    """Log request payload summary on errors for diagnosis."""
+    import json as _json
+    try:
+        request = payload.get("request", {})
+        contents = request.get("contents", [])
+        debug = {
+            "status": status_code,
+            "credential": credential[:30] if credential else "",
+            "model": payload.get("model"),
+            "generationConfig": request.get("generationConfig"),
+            "contents_count": len(contents),
+            "tools_count": len(request.get("tools", []) or []),
+            "has_systemInstruction": "systemInstruction" in request,
+        }
+        if contents:
+            last = contents[-1]
+            debug["last_content_role"] = last.get("role")
+            parts = last.get("parts", [])
+            debug["last_content_parts_count"] = len(parts)
+            if parts:
+                debug["last_part_keys"] = [
+                    list(p.keys()) if isinstance(p, dict) else type(p).__name__
+                    for p in parts[:3]
+                ]
+        log.error(f"[{label}] REQUEST DEBUG: {_json.dumps(debug, default=str)}")
+    except Exception as e:
+        log.error(f"[{label}] REQUEST DEBUG failed: {e}")
 
 def build_antigravity_headers(access_token: str, model_name: str = "") -> Dict[str, str]:
     """
@@ -134,6 +270,9 @@ async def stream_request(
         Response对象（错误时）或 bytes流/str流（成功时）
     """
     model_name = body.get("model", "")
+
+    # Set up audit context for this request
+    set_audit_context(mode="antigravity", model=model_name, streaming=True)
 
     def _is_safety_settings_error(text: str) -> bool:
         t = (text or "").lower()
@@ -205,8 +344,7 @@ async def stream_request(
         return
 
     # 2. 构建URL和请求头
-    antigravity_url = await get_antigravity_api_url()
-    target_url = f"{antigravity_url}/v1internal:streamGenerateContent?alt=sse"
+    endpoint_fallbacks = await get_antigravity_endpoint_fallbacks()
 
     auth_headers = build_antigravity_headers(access_token, model_name)
 
@@ -220,6 +358,30 @@ async def stream_request(
         "project": project_id,
         "request": body.get("request", {}),
     }
+
+    # -------------------------------------------------------------------------
+    # Adaptive thinking emulation via effort → thinkingBudget mapping
+    # -------------------------------------------------------------------------
+    # Antigravity rejects effortLevel with 400, but we can emulate effort
+    # by scaling thinkingBudget — the only lever available for Claude.
+    gen_config = final_payload.get("request", {}).get("generationConfig")
+    if isinstance(gen_config, dict):
+        effort = gen_config.pop("effortLevel", None)
+        if effort:
+            effort_budget_map = {
+                "LOW": 4096,       # Fast: minimal thinking for simple tasks
+                "MEDIUM": 16384,   # Balanced: standard reasoning depth
+                "HIGH": 32768,     # Deep: full thinking for complex tasks
+            }
+            target_budget = effort_budget_map.get(effort, 32768)
+            thinking_config = gen_config.get("thinkingConfig")
+            if isinstance(thinking_config, dict):
+                # gemini_fix.py converts to snake_case for Claude models
+                if "thinking_budget" in thinking_config:
+                    thinking_config["thinking_budget"] = target_budget
+                else:
+                    thinking_config["thinkingBudget"] = target_budget
+                log.info(f"[ADAPTIVE-EMULATION] effort={effort} → thinkingBudget={target_budget}")
 
     # 3. 调用stream_post_async进行请求
     retry_config = await get_retry_config()
@@ -255,11 +417,17 @@ async def stream_request(
     for attempt in range(max_retries + 1):
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
+        force_rotate_credential = False
         last_status_code_for_retry: Optional[int] = None
 
+        # Track attempt for audit
+        if attempt > 0:
+            increment_audit_attempt()
+
         try:
-            async for chunk in stream_post_async(
-                url=target_url,
+            async for chunk in _stream_with_endpoint_fallback(
+                endpoints=endpoint_fallbacks,
+                method_path="v1internal:streamGenerateContent?alt=sse",
                 body=final_payload,
                 native=native,
                 headers=auth_headers
@@ -279,6 +447,48 @@ async def stream_request(
 
                     # 保存错误内容用于智能重试策略
                     last_error_body = error_body or ""
+
+                    # Credential-specific model not found (404): model-level cooldown + rotate account.
+                    if _is_model_not_found_404(status_code, error_body or ""):
+                        cooldown_secs = await get_model_not_found_404_model_cooldown_seconds()
+                        cooldown_until = None
+                        if cooldown_secs > 0:
+                            cooldown_until = time.time() + float(cooldown_secs)
+
+                        log.warning(
+                            f"[ANTIGRAVITY STREAM] Model not found for credential; "
+                            f"applying model cooldown and rotating. status=404, "
+                            f"credential={current_file}, model={model_name}, cooldown_secs={cooldown_secs}"
+                        )
+
+                        await record_api_call_error(
+                            credential_manager,
+                            current_file,
+                            status_code,
+                            cooldown_until,
+                            mode="antigravity",
+                            model_key=model_name,
+                        )
+
+                        if attempt < max_retries:
+                            force_rotate_credential = True
+                            need_retry = True
+                            if next_cred_task is None:
+                                next_cred_task = asyncio.create_task(
+                                    credential_manager.get_valid_credential(
+                                        mode="antigravity",
+                                        model_key=model_name,
+                                        exclude_filenames=list(tried_files),
+                                    )
+                                )
+                            delay_ms = await get_retry_rotate_delay_ms()
+                            await asyncio.sleep(delay_ms / 1000.0)
+                            break
+
+                        log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        _log_payload_debug("ANTIGRAVITY STREAM MAX-RETRY", final_payload, status_code, current_file)
+                        yield chunk
+                        return
 
                     # Defensive model fallback (mainly for Haiku→Flash routing)
                     # If upstream rejects our request due to safety_settings validation,
@@ -397,7 +607,7 @@ async def stream_request(
                                     await credential_manager.add_antigravity_credential(current_file, credential_data)
                                     await credential_manager.update_credential_state(
                                         current_file,
-                                        {"disabled": False, "error_codes": []},
+                                        {"disabled": False, "disabled_reason": None, "error_codes": []},
                                         mode="antigravity",
                                     )
                                     log.info(
@@ -445,6 +655,7 @@ async def stream_request(
                             await asyncio.sleep(delay_ms / 1000.0)
                             break
                         log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        _log_payload_debug("ANTIGRAVITY STREAM MAX-RETRY", final_payload, status_code, current_file)
                         yield chunk
                         return
 
@@ -510,7 +721,8 @@ async def stream_request(
                         # Auto-ban: disable credential on DISABLE_ERROR_CODES
                         if await check_should_auto_ban(status_code):
                             await handle_auto_ban(
-                                credential_manager, status_code, current_file, mode="antigravity"
+                                credential_manager, status_code, current_file,
+                                mode="antigravity", error_text=error_body or "",
                             )
 
                         # 应用重试延迟
@@ -525,6 +737,7 @@ async def stream_request(
                         
                         # 达到最大重试次数
                         log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        _log_payload_debug("ANTIGRAVITY STREAM MAX-RETRY", final_payload, status_code, current_file)
                         yield chunk
                         return
                     else:
@@ -533,6 +746,7 @@ async def stream_request(
                             f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), "
                             f"凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}"
                         )
+                        _log_payload_debug("ANTIGRAVITY STREAM", final_payload, status_code, current_file)
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
                             None, mode="antigravity", model_key=model_name
@@ -589,6 +803,7 @@ async def stream_request(
                     need_retry = True
                 else:
                     log.error(f"[ANTIGRAVITY STREAM] 空回复达到最大重试次数")
+                    _log_payload_debug("ANTIGRAVITY STREAM EMPTY-RESP", final_payload, 200, current_file)
                     yield Response(
                         content=json.dumps({"error": "服务返回空回复"}),
                         status_code=500,
@@ -603,6 +818,8 @@ async def stream_request(
                 # For non-rotating errors (e.g. empty response), keep the same credential.
                 # For capacity errors (503/529), rotation is handled by should_rotate_account.
                 if (
+                    not force_rotate_credential
+                    and
                     last_status_code_for_retry is not None
                     and not should_rotate_account(int(last_status_code_for_retry), last_error_body)
                 ):
@@ -715,6 +932,9 @@ async def non_stream_request(
 
     model_name = body.get("model", "")
 
+    # Set up audit context for this request (non-streaming path)
+    set_audit_context(mode="antigravity", model=model_name, streaming=False)
+
     # Track tried credentials for this request to avoid repeatedly hitting
     # the same rate-limited/denied account when retrying.
     tried_files: set[str] = set()
@@ -758,8 +978,7 @@ async def non_stream_request(
         )
 
     # 2. 构建URL和请求头
-    antigravity_url = await get_antigravity_api_url()
-    target_url = f"{antigravity_url}/v1internal:generateContent"
+    endpoint_fallbacks = await get_antigravity_endpoint_fallbacks()
 
     auth_headers = build_antigravity_headers(access_token, model_name)
 
@@ -773,6 +992,27 @@ async def non_stream_request(
         "project": project_id,
         "request": body.get("request", {}),
     }
+
+    # -------------------------------------------------------------------------
+    # Adaptive thinking emulation via effort → thinkingBudget mapping
+    # -------------------------------------------------------------------------
+    gen_config = final_payload.get("request", {}).get("generationConfig")
+    if isinstance(gen_config, dict):
+        effort = gen_config.pop("effortLevel", None)
+        if effort:
+            effort_budget_map = {
+                "LOW": 4096,
+                "MEDIUM": 16384,
+                "HIGH": 32768,
+            }
+            target_budget = effort_budget_map.get(effort, 32768)
+            thinking_config = gen_config.get("thinkingConfig")
+            if isinstance(thinking_config, dict):
+                if "thinking_budget" in thinking_config:
+                    thinking_config["thinking_budget"] = target_budget
+                else:
+                    thinking_config["thinkingBudget"] = target_budget
+                log.info(f"[ADAPTIVE-EMULATION] effort={effort} → thinkingBudget={target_budget}")
 
     # 3. 调用post_async进行请求
     retry_config = await get_retry_config()
@@ -806,11 +1046,17 @@ async def non_stream_request(
 
     for attempt in range(max_retries + 1):
         need_retry = False  # 标记是否需要重试
-        
+        force_rotate_credential = False
+
+        # Track attempt for audit
+        if attempt > 0:
+            increment_audit_attempt()
+
         try:
-            response = await post_async(
-                url=target_url,
-                json=final_payload,
+            response = await _post_with_endpoint_fallback(
+                endpoints=endpoint_fallbacks,
+                method_path="v1internal:generateContent",
+                json_body=final_payload,
                 headers=auth_headers,
                 timeout=300.0
             )
@@ -833,6 +1079,7 @@ async def non_stream_request(
                         need_retry = True
                     else:
                         log.error(f"[ANTIGRAVITY] 空回复达到最大重试次数")
+                        _log_payload_debug("ANTIGRAVITY EMPTY-RESP", final_payload, 200, current_file)
                         return Response(
                             content=json.dumps({"error": "服务返回空回复"}),
                             status_code=500,
@@ -877,6 +1124,98 @@ async def non_stream_request(
                     credential_id=str(current_file),
                     model=str(model_name),
                 )
+
+                # Credential-specific model not found (404): model-level cooldown + rotate account.
+                if _is_model_not_found_404(status_code, error_text or ""):
+                    cooldown_secs = await get_model_not_found_404_model_cooldown_seconds()
+                    cooldown_until = None
+                    if cooldown_secs > 0:
+                        cooldown_until = time.time() + float(cooldown_secs)
+
+                    log.warning(
+                        f"[ANTIGRAVITY] Model not found for credential; applying model cooldown and rotating. "
+                        f"status=404, credential={current_file}, model={model_name}, cooldown_secs={cooldown_secs}"
+                    )
+
+                    await record_api_call_error(
+                        credential_manager,
+                        current_file,
+                        status_code,
+                        cooldown_until,
+                        mode="antigravity",
+                        model_key=model_name,
+                    )
+
+                    if attempt < max_retries:
+                        force_rotate_credential = True
+                        need_retry = True
+                        if next_cred_task is None:
+                            next_cred_task = asyncio.create_task(
+                                credential_manager.get_valid_credential(
+                                    mode="antigravity",
+                                    model_key=model_name,
+                                    exclude_filenames=list(tried_files),
+                                )
+                            )
+                        await asyncio.sleep((await get_retry_rotate_delay_ms()) / 1000.0)
+                    else:
+                        log.error(f"[ANTIGRAVITY] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        _log_payload_debug("ANTIGRAVITY MAX-RETRY", final_payload, status_code, current_file)
+                        return last_error_response
+
+                    # Skip generic retry strategy for this classified 404.
+                    if need_retry:
+                        log.info(
+                            f"[ANTIGRAVITY] 重试请求 (attempt {attempt + 2}/{max_retries + 1})..."
+                        )
+
+                        # 使用预热的凭证任务,避免等待
+                        if next_cred_task is not None:
+                            try:
+                                cred_result = await next_cred_task
+                                next_cred_task = None  # 重置任务
+
+                                if cred_result:
+                                    current_file, credential_data = cred_result
+                                    tried_files.add(str(current_file))
+                                    access_token = credential_data.get("access_token") or credential_data.get("token")
+                                    project_id = credential_data.get("project_id", "")
+                                    if access_token and project_id:
+                                        auth_headers["Authorization"] = f"Bearer {access_token}"
+                                        final_payload["project"] = project_id
+                                        continue  # 重试
+                            except Exception as e:
+                                log.warning(f"[ANTIGRAVITY] 预热凭证任务失败: {e}")
+                                next_cred_task = None
+
+                        if not await refresh_credential_fast():
+                            log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
+                            if await get_pool_wait_enabled():
+                                try:
+                                    waited = await credential_manager.wait_for_valid_credential(
+                                        mode="antigravity",
+                                        model_key=model_name,
+                                        exclude_filenames=None,
+                                        max_wait_seconds=await get_pool_wait_max_seconds(),
+                                        poll_seconds=await get_pool_wait_poll_seconds(),
+                                    )
+                                    if waited:
+                                        current_file, credential_data = waited
+                                        tried_files.add(str(current_file))
+                                        access_token = credential_data.get("access_token") or credential_data.get("token")
+                                        project_id = credential_data.get("project_id", "")
+                                        if access_token and project_id:
+                                            auth_headers["Authorization"] = f"Bearer {access_token}"
+                                            final_payload["project"] = project_id
+                                            continue
+                                except Exception as e:
+                                    log.warning(f"[ANTIGRAVITY] Pool wait during retry failed: {e}")
+
+                            snapshot = await credential_manager.get_model_availability_snapshot(
+                                mode="antigravity", model_key=model_name, exclude_filenames=None
+                            )
+                            return _build_no_credentials_response(snapshot)
+                        continue
 
                 # Special handling: entitlement/project permission errors should not spam the pool.
                 extra_cooldown_until = None
@@ -966,6 +1305,7 @@ async def non_stream_request(
                         await asyncio.sleep((await get_retry_rotate_delay_ms()) / 1000.0)
                     else:
                         log.error(f"[ANTIGRAVITY] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        _log_payload_debug("ANTIGRAVITY MAX-RETRY", final_payload, status_code, current_file)
                         return last_error_response
 
                 if not immediate_rotate and strategy != RetryStrategy.NO_RETRY:
@@ -1030,7 +1370,8 @@ async def non_stream_request(
                     # Auto-ban: disable credential on DISABLE_ERROR_CODES
                     if await check_should_auto_ban(status_code):
                         await handle_auto_ban(
-                            credential_manager, status_code, current_file, mode="antigravity"
+                            credential_manager, status_code, current_file,
+                            mode="antigravity", error_text=error_text or "",
                         )
 
                     # 应用重试延迟
@@ -1044,6 +1385,7 @@ async def non_stream_request(
                     else:
                         # 达到最大重试次数
                         log.error(f"[ANTIGRAVITY] 达到最大重试次数 ({max_retries})，返回原始错误")
+                        _log_payload_debug("ANTIGRAVITY MAX-RETRY", final_payload, status_code, current_file)
                         return last_error_response
                 else:
                     # 不可重试的错误 (400等)
@@ -1051,6 +1393,7 @@ async def non_stream_request(
                         f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), "
                         f"凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}"
                     )
+                    _log_payload_debug("ANTIGRAVITY NON-STREAM", final_payload, status_code, current_file)
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
                         None, mode="antigravity", model_key=model_name
@@ -1061,7 +1404,7 @@ async def non_stream_request(
             if need_retry:
                 log.info(f"[ANTIGRAVITY] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
 
-                if not should_rotate_account(int(status_code), error_text or ""):
+                if (not force_rotate_credential) and not should_rotate_account(int(status_code), error_text or ""):
                     log.info(f"[ANTIGRAVITY] Keeping same credential for status={status_code}")
                     continue
 

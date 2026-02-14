@@ -293,6 +293,22 @@ async def messages(
             normalized_dict, real_model, is_streaming
         )
 
+    # ========== Strip googleSearch for unsupported Antigravity models ==========
+    # Only gemini-2.5-flash supports googleSearch on Antigravity endpoint.
+    # Other models (gemini-3-flash, etc.) hang or return 503.
+    ANTIGRAVITY_SEARCH_MODELS = {"gemini-2.5-flash"}
+    if real_model not in ANTIGRAVITY_SEARCH_MODELS:
+        tools = normalized_dict.get("tools")
+        if tools and isinstance(tools, list):
+            from src.converter.anthropic2gemini import WEB_SEARCH_PATTERNS
+            filtered = [t for t in tools if not (
+                t.get("type", "").startswith("web_search") or
+                t.get("name", "") in WEB_SEARCH_PATTERNS
+            )]
+            if len(filtered) != len(tools):
+                log.info(f"[ANTIGRAVITY] Stripped web_search tools for {real_model} (not supported)")
+                normalized_dict["tools"] = filtered if filtered else None
+
     # 转换为 Gemini 格式 (使用 converter)
     from src.converter.anthropic2gemini import anthropic_to_gemini_request
     gemini_dict = await anthropic_to_gemini_request(normalized_dict, session_id=session_id)
@@ -533,6 +549,10 @@ async def messages(
         from fastapi import Response
         from src.converter.anthropic2gemini import gemini_stream_to_anthropic_stream
 
+        # Send immediate ping to establish first byte for Cloudflare (100s timeout)
+        ping_bytes = format_sse({"type": "ping"})
+        yield ping_bytes
+
         # If the pool is exhausted, optionally keep the client connection alive
         # with Anthropic ping events while waiting for recovery.
         try:
@@ -680,16 +700,45 @@ async def messages(
                     else:
                         yield str(chunk).encode("utf-8")
 
-        # 使用转换器处理整个流
-        async for anthropic_chunk in gemini_stream_to_anthropic_stream(
+        # 使用转换器处理整个流 (with heartbeats to prevent Cloudflare 524 timeout)
+        _SENTINEL = object()
+
+        async def _anext_or_sentinel(aiter):
+            try:
+                return await aiter.__anext__()
+            except StopAsyncIteration:
+                return _SENTINEL
+
+        aiter = gemini_stream_to_anthropic_stream(
             gemini_chunk_wrapper(),
             real_model,
             200,
             session_id=session_id,
             message_count=message_count
-        ):
-            if anthropic_chunk:
-                yield anthropic_chunk
+        ).__aiter__()
+
+        task = None
+        try:
+            while True:
+                task = create_managed_task(
+                    _anext_or_sentinel(aiter), name="anthropic_stream_next"
+                )
+                while not task.done():
+                    await asyncio.wait({task}, timeout=30.0)
+                    if not task.done():
+                        yield ping_bytes
+                chunk = task.result()
+                if chunk is _SENTINEL:
+                    break
+                if chunk:
+                    yield chunk
+        finally:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     # ========== 根据模式选择生成器 ==========
     if use_fake_streaming:

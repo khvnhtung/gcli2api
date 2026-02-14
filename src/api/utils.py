@@ -96,23 +96,46 @@ async def handle_auto_ban(
     credential_manager: CredentialManager,
     status_code: int,
     credential_name: str,
-    mode: str = "geminicli"
+    mode: str = "geminicli",
+    error_text: str = "",
 ) -> None:
     """
-    处理自动封禁：直接禁用凭证
-    
+    处理自动封禁：直接禁用凭证，并保存禁用原因
+
     Args:
         credential_manager: 凭证管理器实例
         status_code: HTTP状态码
         credential_name: 凭证名称
         mode: 模式（geminicli 或 antigravity）
+        error_text: 错误响应文本（用于提取验证链接等）
     """
     if credential_manager and credential_name:
+        # Build disabled reason with validation URL if present
+        disabled_reason = f"Auto-banned: HTTP {status_code}"
+        if error_text:
+            try:
+                err_data = json.loads(error_text)
+                details = err_data.get("error", {}).get("details", [])
+                for detail in details:
+                    metadata = detail.get("metadata", {})
+                    validation_url = metadata.get("validation_url")
+                    if validation_url:
+                        disabled_reason = f"Verification required: {validation_url}"
+                        break
+                    reason = detail.get("reason", "")
+                    if reason and reason != "VALIDATION_REQUIRED":
+                        disabled_reason = f"Auto-banned: {reason}"
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
         log.warning(
-            f"[{mode.upper()} AUTO_BAN] Status {status_code} triggers auto-ban for credential: {credential_name}"
+            f"[{mode.upper()} AUTO_BAN] Status {status_code} triggers auto-ban for credential: "
+            f"{credential_name} — {disabled_reason}"
         )
-        await credential_manager.set_cred_disabled(
-            credential_name, True, mode=mode
+        await credential_manager.update_credential_state(
+            credential_name,
+            {"disabled": True, "disabled_reason": disabled_reason},
+            mode=mode,
         )
 
 
@@ -124,7 +147,8 @@ async def handle_error_with_retry(
     attempt: int,
     max_retries: int,
     retry_interval: float,
-    mode: str = "geminicli"
+    mode: str = "geminicli",
+    error_text: str = "",
 ) -> bool:
     """
     统一处理错误和重试逻辑
@@ -151,7 +175,7 @@ async def handle_error_with_retry(
 
     if should_auto_ban:
         # 触发自动封禁
-        await handle_auto_ban(credential_manager, status_code, credential_name, mode)
+        await handle_auto_ban(credential_manager, status_code, credential_name, mode, error_text)
 
         # 自动封禁后，仍然尝试重试（会在下次循环中自动获取新凭证）
         if retry_enabled and attempt < max_retries:
@@ -214,6 +238,26 @@ async def record_api_call_success(
             credential_name, True, mode=mode, model_key=model_key
         )
 
+    # Audit log (fire-and-forget, non-blocking)
+    try:
+        from src.audit_log import get_audit_context, log_attempt
+        ctx = get_audit_context()
+        if ctx:
+            await log_attempt(
+                request_id=ctx["request_id"],
+                mode=ctx.get("mode") or mode,
+                credential_filename=credential_name,
+                model_requested=ctx.get("model_requested") or model_key,
+                streaming=ctx.get("streaming", False),
+                attempt_no=ctx.get("attempt_no", 0),
+                max_retries=ctx.get("max_retries", 0),
+                http_status=200,
+                latency_ms=(time.time() - ctx["start_time"]) * 1000 if ctx.get("start_time") else None,
+                outcome="success",
+            )
+    except Exception:
+        pass  # Audit is best-effort
+
 
 async def record_api_call_error(
     credential_manager: CredentialManager,
@@ -221,7 +265,8 @@ async def record_api_call_error(
     status_code: int,
     cooldown_until: Optional[float] = None,
     mode: str = "geminicli",
-    model_key: Optional[str] = None
+    model_key: Optional[str] = None,
+    error_text: str = "",
 ) -> None:
     """
     记录API调用错误
@@ -233,6 +278,7 @@ async def record_api_call_error(
         cooldown_until: 冷却截止时间（Unix时间戳）
         mode: 模式（geminicli 或 antigravity）
         model_key: 模型键（用于模型级CD）
+        error_text: 错误响应文本（传递给审计日志）
     """
     if credential_manager and credential_name:
         await credential_manager.record_api_call_result(
@@ -243,6 +289,26 @@ async def record_api_call_error(
             mode=mode,
             model_key=model_key
         )
+
+    # Audit log (fire-and-forget, non-blocking)
+    try:
+        from src.audit_log import get_audit_context, log_attempt
+        ctx = get_audit_context()
+        if ctx:
+            await log_attempt(
+                request_id=ctx["request_id"],
+                mode=ctx.get("mode") or mode,
+                credential_filename=credential_name,
+                model_requested=ctx.get("model_requested") or model_key,
+                streaming=ctx.get("streaming", False),
+                attempt_no=ctx.get("attempt_no", 0),
+                max_retries=ctx.get("max_retries", 0),
+                http_status=status_code,
+                latency_ms=(time.time() - ctx["start_time"]) * 1000 if ctx.get("start_time") else None,
+                error_text=error_text,
+            )
+    except Exception:
+        pass  # Audit is best-effort
 
 
 # ==================== 429错误处理 ====================

@@ -45,6 +45,8 @@ from src.api.utils import (
 )
 from src.utils import GEMINICLI_USER_AGENT
 
+from src.audit_log import set_audit_context, increment_audit_attempt
+
 
 def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
     status = 429 if snapshot.get("enabled") and snapshot.get("available") == 0 else 503
@@ -133,6 +135,9 @@ async def stream_request(
     model_name = body.get("model", "")
     model_group = get_model_group(model_name)
 
+    # Set up audit context for this request
+    set_audit_context(mode="geminicli", model=model_name, streaming=True)
+
     # 1. 获取有效凭证
     cred_result = await credential_manager.get_valid_credential(
         mode="geminicli", model_key=model_group
@@ -215,6 +220,10 @@ async def stream_request(
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
 
+        # Track attempt for audit
+        if attempt > 0:
+            increment_audit_attempt()
+
         try:
             async for chunk in stream_post_async(
                 url=target_url,
@@ -272,7 +281,7 @@ async def stream_request(
                         should_retry = await handle_error_with_retry(
                             credential_manager, status_code, current_file,
                             retry_config["retry_enabled"], attempt, max_retries, retry_interval,
-                            mode="geminicli"
+                            mode="geminicli", error_text=error_body or "",
                         )
 
                         if should_retry and attempt < max_retries:
@@ -405,6 +414,9 @@ async def non_stream_request(
     model_name = body.get("model", "")
     model_group = get_model_group(model_name)
 
+    # Set up audit context for this request (non-streaming path)
+    set_audit_context(mode="geminicli", model=model_name, streaming=False)
+
     # 1. 获取有效凭证
     cred_result = await credential_manager.get_valid_credential(
         mode="geminicli", model_key=model_group
@@ -472,6 +484,10 @@ async def non_stream_request(
             return None
 
     for attempt in range(max_retries + 1):
+        # Track attempt for audit
+        if attempt > 0:
+            increment_audit_attempt()
+
         try:
             response = await post_async(
                 url=target_url,
@@ -544,7 +560,8 @@ async def non_stream_request(
                 # Auto-ban: disable credential on DISABLE_ERROR_CODES
                 if await check_should_auto_ban(status_code):
                     await handle_auto_ban(
-                        credential_manager, status_code, current_file, mode="geminicli"
+                        credential_manager, status_code, current_file,
+                        mode="geminicli", error_text=error_text or "",
                     )
                 # 尝试切换到新凭证并重试
                 if attempt < max_retries:
@@ -617,7 +634,7 @@ async def non_stream_request(
                 should_retry = await handle_error_with_retry(
                     credential_manager, status_code, current_file,
                     retry_config["retry_enabled"], attempt, max_retries, retry_interval,
-                    mode="geminicli"
+                    mode="geminicli", error_text=error_text or "",
                 )
 
                 if should_retry and attempt < max_retries:

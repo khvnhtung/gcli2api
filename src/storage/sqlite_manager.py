@@ -20,15 +20,18 @@ class SQLiteManager:
     STATE_FIELDS = {
         "error_codes",
         "disabled",
+        "disabled_reason",
         "last_success",
         "user_email",
         "model_cooldowns",
+        "is_ultra",
     }
 
     # 所有必需的列定义（用于自动校验和修复）
     REQUIRED_COLUMNS = {
         "credentials": [
             ("disabled", "INTEGER DEFAULT 0"),
+            ("disabled_reason", "TEXT"),
             ("error_codes", "TEXT DEFAULT '[]'"),
             ("last_success", "REAL"),
             ("user_email", "TEXT"),
@@ -40,6 +43,7 @@ class SQLiteManager:
         ],
         "antigravity_credentials": [
             ("disabled", "INTEGER DEFAULT 0"),
+            ("disabled_reason", "TEXT"),
             ("error_codes", "TEXT DEFAULT '[]'"),
             ("last_success", "REAL"),
             ("user_email", "TEXT"),
@@ -47,7 +51,8 @@ class SQLiteManager:
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
-            ("updated_at", "REAL DEFAULT (unixepoch())")
+            ("updated_at", "REAL DEFAULT (unixepoch())"),
+            ("is_ultra", "INTEGER DEFAULT 0"),
         ]
     }
 
@@ -97,6 +102,13 @@ class SQLiteManager:
 
                 self._initialized = True
                 log.info(f"SQLite storage initialized at {self._db_path}")
+
+                # Initialize audit log (uses same DB path)
+                try:
+                    from src.audit_log import init_audit_log
+                    await init_audit_log(self._db_path)
+                except Exception as audit_err:
+                    log.warning(f"Audit log initialization failed (non-fatal): {audit_err}")
 
             except Exception as e:
                 log.error(f"Error initializing SQLite: {e}")
@@ -274,6 +286,7 @@ class SQLiteManager:
         mode: str = "geminicli",
         model_key: Optional[str] = None,
         exclude_filenames: Optional[List[str]] = None,
+        require_ultra: Optional[bool] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
         获取一个可用凭证
@@ -299,6 +312,16 @@ class SQLiteManager:
                 # 获取所有候选凭证（未禁用），可选排除已尝试的凭证（避免重试时反复命中同一账号）
                 where_sql = "WHERE disabled = 0"
                 params: List[Any] = []
+
+                # Auto-detect: Claude models on antigravity require ultra accounts
+                effective_ultra = require_ultra
+                if effective_ultra is None and mode == "antigravity" and model_key:
+                    if model_key.startswith("claude-"):
+                        effective_ultra = True
+
+                if effective_ultra is True:
+                    where_sql += " AND is_ultra = 1"
+
                 if exclude_filenames:
                     placeholders = ",".join(["?"] * len(exclude_filenames))
                     where_sql += f" AND filename NOT IN ({placeholders})"
@@ -663,7 +686,7 @@ class SQLiteManager:
             async with aiosqlite.connect(self._db_path) as db:
                 # 首先尝试精确匹配
                 async with db.execute(f"""
-                    SELECT disabled, error_codes, last_success, user_email, model_cooldowns
+                    SELECT disabled, error_codes, last_success, user_email, model_cooldowns, disabled_reason, is_ultra
                     FROM {table_name} WHERE filename = ?
                 """, (filename,)) as cursor:
                     row = await cursor.fetchone()
@@ -677,11 +700,13 @@ class SQLiteManager:
                             "last_success": row[2] or time.time(),
                             "user_email": row[3],
                             "model_cooldowns": json.loads(model_cooldowns_json),
+                            "disabled_reason": row[5],
+                            "is_ultra": bool(row[6]) if row[6] is not None else False,
                         }
 
                 # 如果精确匹配失败，尝试basename匹配
                 async with db.execute(f"""
-                    SELECT disabled, error_codes, last_success, user_email, model_cooldowns
+                    SELECT disabled, error_codes, last_success, user_email, model_cooldowns, disabled_reason, is_ultra
                     FROM {table_name} WHERE filename LIKE '%' || ?
                 """, (filename,)) as cursor:
                     row = await cursor.fetchone()
@@ -695,6 +720,8 @@ class SQLiteManager:
                             "last_success": row[2] or time.time(),
                             "user_email": row[3],
                             "model_cooldowns": json.loads(model_cooldowns_json),
+                            "disabled_reason": row[5],
+                            "is_ultra": bool(row[6]) if row[6] is not None else False,
                         }
 
                 # 返回默认状态
@@ -704,6 +731,8 @@ class SQLiteManager:
                     "last_success": time.time(),
                     "user_email": None,
                     "model_cooldowns": {},
+                    "disabled_reason": None,
+                    "is_ultra": False,
                 }
 
         except Exception as e:
@@ -719,7 +748,7 @@ class SQLiteManager:
             async with aiosqlite.connect(self._db_path) as db:
                 async with db.execute(f"""
                     SELECT filename, disabled, error_codes, last_success,
-                           user_email, model_cooldowns
+                           user_email, model_cooldowns, disabled_reason, is_ultra
                     FROM {table_name}
                 """) as cursor:
                     rows = await cursor.fetchall()
@@ -746,6 +775,8 @@ class SQLiteManager:
                             "last_success": row[3] or time.time(),
                             "user_email": row[4],
                             "model_cooldowns": model_cooldowns,
+                            "disabled_reason": row[6],
+                            "is_ultra": bool(row[7]) if row[7] is not None else False,
                         }
 
                     return states
@@ -823,7 +854,7 @@ class SQLiteManager:
                 # 先获取所有数据（用于冷却筛选，因为需要在Python中判断）
                 all_query = f"""
                     SELECT filename, disabled, error_codes, last_success,
-                           user_email, rotation_order, model_cooldowns
+                           user_email, rotation_order, model_cooldowns, disabled_reason, is_ultra
                     FROM {table_name}
                     {where_clause}
                     ORDER BY rotation_order
@@ -874,6 +905,8 @@ class SQLiteManager:
                             "user_email": row[4],
                             "rotation_order": row[5],
                             "model_cooldowns": active_cooldowns,
+                            "disabled_reason": row[7],
+                            "is_ultra": bool(row[8]) if row[8] is not None else False,
                         }
 
                         # 应用冷却筛选

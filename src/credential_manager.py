@@ -53,6 +53,7 @@ class CredentialManager:
         model_key: Optional[str] = None,
         exclude_filenames: Optional[List[str]] = None,
         log_no_credential: bool = True,
+        require_ultra: Optional[bool] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
         获取有效的凭证 - 随机负载均衡版
@@ -64,6 +65,7 @@ class CredentialManager:
             model_key: 模型键，用于模型级冷却检查
                       - antigravity: 模型名称（如 "gemini-2.0-flash-exp"）
                       - gcli: "pro" 或 "flash"
+            require_ultra: If True, only return ultra-tier credentials
         """
         await self._ensure_initialized()
 
@@ -71,7 +73,8 @@ class CredentialManager:
         max_retries = 3
         for attempt in range(max_retries):
             result = await self._storage_adapter._backend.get_next_available_credential(
-                mode=mode, model_key=model_key, exclude_filenames=exclude_filenames
+                mode=mode, model_key=model_key, exclude_filenames=exclude_filenames,
+                require_ultra=require_ultra
             )
 
             # 如果没有可用凭证，直接返回None
@@ -113,6 +116,7 @@ class CredentialManager:
         exclude_filenames: Optional[List[str]],
         max_wait_seconds: float,
         poll_seconds: float,
+        require_ultra: Optional[bool] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Wait for a valid credential to become available.
 
@@ -143,6 +147,7 @@ class CredentialManager:
                 model_key=model_key,
                 exclude_filenames=exclude_filenames,
                 log_no_credential=False,
+                require_ultra=require_ultra,
             )
             if cred:
                 return cred
@@ -154,6 +159,7 @@ class CredentialManager:
                     model_key=model_key,
                     exclude_filenames=None,
                     log_no_credential=False,
+                    require_ultra=require_ultra,
                 )
                 if cred_any:
                     return cred_any
@@ -265,8 +271,12 @@ class CredentialManager:
         """设置凭证的启用/禁用状态"""
         try:
             log.info(f"[CredMgr] set_cred_disabled 开始: credential_name={credential_name}, disabled={disabled}, mode={mode}")
+            state_updates = {"disabled": disabled}
+            if not disabled:
+                # Clear reason when re-enabling
+                state_updates["disabled_reason"] = None
             success = await self.update_credential_state(
-                credential_name, {"disabled": disabled}, mode=mode
+                credential_name, state_updates, mode=mode
             )
             log.info(f"[CredMgr] update_credential_state 返回: success={success}")
             if success:
