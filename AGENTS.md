@@ -207,6 +207,7 @@ Cleans MCP tool schemas for Gemini API compatibility:
 - `anyOf`/`oneOf` merging
 - Empty object injection (fixes Notion MCP)
 - Cache control stripping
+- `WEB_SEARCH_PATTERNS`: Module-level constant of tool names mapped to googleSearch (importable)
 
 ### Converters (`src/converter/`)
 - `anthropic2gemini.py`: Anthropic ↔ Gemini format conversion
@@ -255,6 +256,8 @@ return create_error_response("Not found", status_code=404)
    ```bash
    systemctl --user restart gcli2api
    ```
+
+7. **Search Tool Stripping**: On Antigravity, `web_search`/`google_search` tools are auto-stripped for models other than `gemini-2.5-flash` (in `src/router/antigravity/anthropic.py`). This prevents 503 MODEL_CAPACITY_EXHAUSTED hangs. For Claude models, search is intercepted earlier by `web_search_handler.py`.
 
 ## Debugging Guide
 
@@ -378,11 +381,9 @@ gcli2api provides web search capability via Gemini's native `googleSearch` groun
 
 | Model | Search | Notes |
 |-------|--------|-------|
-| `gemini-2.5-flash` | ✓ | Works, provides URLs when asked |
-| `gemini-2.5-pro` | ✗ | Capacity/auth issues |
-| `gemini-3-flash-preview` | ✗ | 404 - Not available |
-| `gemini-3-pro-preview` | ✗ | 404 - Not available |
-| Claude models | ✗ | No native googleSearch support |
+| `gemini-2.5-flash` | ✓ | Only model with googleSearch support |
+| Other Gemini models | auto-stripped | Search tools silently removed to prevent 503/hangs |
+| Claude models | intercepted | Handled by `web_search_handler.py` (separate Gemini call) |
 
 ### How to Enable Search
 

@@ -116,6 +116,7 @@ function createCredsManager(type) {
                             filename: item.filename,
                             status: {
                                 disabled: item.disabled,
+                                disabled_reason: item.disabled_reason,
                                 error_codes: item.error_codes || [],
                                 last_success: item.last_success,
                             },
@@ -571,6 +572,17 @@ function createCredCard(credInfo, manager) {
         }
     } else {
         statusBadges += '<span class="status-badge" style="background-color: #28a745; color: white;">无错误</span>';
+    }
+
+    // Show disabled reason (e.g. verification URL)
+    if (status.disabled && status.disabled_reason) {
+        const reason = status.disabled_reason;
+        const urlMatch = reason.match(/https?:\/\/\S+/);
+        if (urlMatch) {
+            statusBadges += `<a href="${urlMatch[0]}" target="_blank" rel="noopener" class="status-badge" style="background-color: #856404; color: #fff3cd; text-decoration: underline; cursor: pointer;">Verify Account</a>`;
+        } else {
+            statusBadges += `<span class="status-badge" style="background-color: #856404; color: #fff3cd;" title="${reason}">${reason}</span>`;
+        }
     }
 
     // 模型级冷却状态
