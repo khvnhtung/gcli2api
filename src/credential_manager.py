@@ -13,6 +13,18 @@ from src.google_oauth_api import Credentials
 from src.storage_adapter import get_storage_adapter
 
 
+_HARD_LOCK_PREFIX = "Hard-locked:"
+
+
+def _is_hard_locked_reason(disabled_reason: Any) -> bool:
+    if not disabled_reason:
+        return False
+    try:
+        return str(disabled_reason).startswith(_HARD_LOCK_PREFIX)
+    except Exception:
+        return False
+
+
 class CredentialManager:
     """
     统一凭证管理器
@@ -253,6 +265,15 @@ class CredentialManager:
         await self._ensure_initialized()
         log.debug(f"[CredMgr] _ensure_initialized 完成")
         try:
+            # Hard-lock guard: once hard-locked, credential cannot be re-enabled.
+            if state_updates.get("disabled") is False:
+                current_state = await self._storage_adapter.get_credential_state(credential_name, mode=mode)
+                if _is_hard_locked_reason(current_state.get("disabled_reason")):
+                    log.warning(
+                        f"[CredMgr] Refusing to re-enable hard-locked credential: {credential_name} (mode={mode})"
+                    )
+                    return False
+
             log.debug(f"[CredMgr] 调用 storage_adapter.update_credential_state...")
             success = await self._storage_adapter.update_credential_state(
                 credential_name, state_updates, mode=mode

@@ -24,6 +24,9 @@ from log import log
 from src.credential_manager import CredentialManager
 
 
+HARD_LOCK_PREFIX = "Hard-locked:"
+
+
 def extract_google_error_message(error_text: str) -> str:
     """Best-effort extraction of Google-style error message from JSON text."""
     if not error_text:
@@ -86,6 +89,10 @@ async def check_should_auto_ban(status_code: int) -> bool:
     Returns:
         bool: 是否应该触发自动封禁
     """
+    # Hard rule: 403 should always trigger auto-ban (hard lock).
+    if status_code == 403:
+        return True
+
     return (
         await get_auto_ban_enabled()
         and status_code in await get_auto_ban_error_codes()
@@ -127,6 +134,11 @@ async def handle_auto_ban(
                         disabled_reason = f"Auto-banned: {reason}"
             except (json.JSONDecodeError, AttributeError):
                 pass
+
+        # 403 is treated as a permanent hard lock to avoid reusing accounts
+        # that upstream has already disabled.
+        if status_code == 403 and not disabled_reason.startswith(HARD_LOCK_PREFIX):
+            disabled_reason = f"{HARD_LOCK_PREFIX} {disabled_reason}"
 
         log.warning(
             f"[{mode.upper()} AUTO_BAN] Status {status_code} triggers auto-ban for credential: "
