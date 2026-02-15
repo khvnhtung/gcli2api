@@ -23,7 +23,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 # 本地模块 - 配置和日志
-from config import get_anti_truncation_max_attempts, get_api_password
+from config import (
+    get_anti_truncation_max_attempts,
+    get_api_password,
+    get_image_offload_enabled,
+)
 from log import log
 
 # 本地模块 - 工具和认证
@@ -355,6 +359,15 @@ async def messages(
             if len(filtered) != len(tools):
                 log.info(f"[ANTIGRAVITY] Stripped web_search tools for {real_model} (not supported)")
                 normalized_dict["tools"] = filtered if filtered else None
+
+    # ========== Optional image offload (image -> short description) ==========
+    if await get_image_offload_enabled():
+        try:
+            from src.converter.image_offload import process_payload
+
+            normalized_dict = await process_payload(normalized_dict)
+        except Exception as e:
+            log.warning(f"[ANTIGRAVITY-ANTHROPIC] Image offload skipped due to error: {e}")
 
     # 转换为 Gemini 格式 (使用 converter)
     from src.converter.anthropic2gemini import anthropic_to_gemini_request
@@ -861,6 +874,14 @@ async def count_tokens(
     # Native countTokens via Gemini API, fall back to local estimation
     input_tokens = 0
     try:
+        if await get_image_offload_enabled():
+            try:
+                from src.converter.image_offload import process_payload
+
+                payload = await process_payload(payload)
+            except Exception as e:
+                log.warning(f"[ANTIGRAVITY-ANTHROPIC] Image offload skipped in count_tokens: {e}")
+
         native_count = await count_tokens_native(payload)
         if native_count is not None:
             input_tokens = native_count

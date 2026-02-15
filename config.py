@@ -55,6 +55,12 @@ ENV_MAPPINGS = {
     "POOL_WAIT_MAX_SECONDS": "pool_wait_max_seconds",
     "POOL_WAIT_POLL_SECONDS": "pool_wait_poll_seconds",
 
+    # Image offload (replace images with short descriptions)
+    "IMAGE_OFFLOAD_ENABLED": "image_offload_enabled",
+    "IMAGE_OFFLOAD_MODEL": "image_offload_model",
+    "IMAGE_OFFLOAD_CACHE_SIZE": "image_offload_cache_size",
+    "IMAGE_OFFLOAD_TIMEOUT_SECONDS": "image_offload_timeout_seconds",
+
     # Audit log
     "AUDIT_LOG_ENABLED": "audit_log_enabled",
     "AUDIT_RAW_ENABLED": "audit_raw_enabled",
@@ -129,6 +135,12 @@ async def build_effective_config_for_panel() -> tuple[dict[str, Any], set[str]]:
     current_config["pool_wait_enabled"] = await get_pool_wait_enabled()
     current_config["pool_wait_max_seconds"] = await get_pool_wait_max_seconds()
     current_config["pool_wait_poll_seconds"] = await get_pool_wait_poll_seconds()
+
+    # Image offload
+    current_config["image_offload_enabled"] = await get_image_offload_enabled()
+    current_config["image_offload_model"] = await get_image_offload_model()
+    current_config["image_offload_cache_size"] = await get_image_offload_cache_size()
+    current_config["image_offload_timeout_seconds"] = await get_image_offload_timeout_seconds()
 
     # Audit raw payload capture
     current_config["audit_raw_enabled"] = await get_audit_raw_enabled()
@@ -609,6 +621,37 @@ async def get_audit_raw_enabled() -> bool:
     if env_value:
         return env_value.lower() in ("true", "1", "yes", "on")
     return bool(await get_config_value("audit_raw_enabled", False))
+
+
+async def get_image_offload_enabled() -> bool:
+    env_value = os.getenv("IMAGE_OFFLOAD_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("image_offload_enabled", False))
+
+
+async def get_image_offload_model() -> str:
+    return str(await get_config_value("image_offload_model", "gemini-3-flash", "IMAGE_OFFLOAD_MODEL"))
+
+
+async def get_image_offload_cache_size() -> int:
+    env_value = os.getenv("IMAGE_OFFLOAD_CACHE_SIZE")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return int(await get_config_value("image_offload_cache_size", 256))
+
+
+async def get_image_offload_timeout_seconds() -> float:
+    env_value = os.getenv("IMAGE_OFFLOAD_TIMEOUT_SECONDS")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass
+    return float(await get_config_value("image_offload_timeout_seconds", 8.0))
 
 
 async def get_audit_raw_dir() -> str:
