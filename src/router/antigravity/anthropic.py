@@ -199,6 +199,7 @@ router = APIRouter()
 @router.post("/antigravity/v1/messages")
 async def messages(
     claude_request: ClaudeRequest,
+    request: Request,
     _token: str = Depends(authenticate_bearer)
 ):
     """
@@ -297,8 +298,54 @@ async def messages(
     # Only gemini-2.5-flash supports googleSearch on Antigravity endpoint.
     # Other models (gemini-3-flash, etc.) hang or return 503.
     ANTIGRAVITY_SEARCH_MODELS = {"gemini-2.5-flash"}
+    tools = normalized_dict.get("tools")
+    user_agent = request.headers.get("user-agent", "")
+    is_opencode_client = "opencode/" in user_agent.lower()
+
+    # Quick fix policy for gemini-3* + web_search on Antigravity:
+    # - OpenCode client: keep Antigravity path and strip unsupported search tool.
+    # - Other clients: reroute to GeminiCLI where search is supported.
+    if real_model.startswith("gemini-3") and tools:
+        from src.converter.anthropic2gemini import WEB_SEARCH_PATTERNS
+
+        has_search_tool = any(
+            (t.get("type", "").startswith("web_search") or t.get("name", "") in WEB_SEARCH_PATTERNS)
+            for t in tools
+            if isinstance(t, dict)
+        )
+        if has_search_tool:
+            if is_opencode_client:
+                filtered = [t for t in tools if not (
+                    t.get("type", "").startswith("web_search") or
+                    t.get("name", "") in WEB_SEARCH_PATTERNS
+                )]
+                log.info(
+                    f"[ANTIGRAVITY] OpenCode client detected, stripping web_search tools for {real_model}"
+                )
+                normalized_dict["tools"] = filtered if filtered else None
+            else:
+                try:
+                    from src.router.geminicli.anthropic import messages as geminicli_anthropic_messages
+
+                    reroute_dict = model_to_dict(claude_request)
+                    reroute_dict["model"] = apply_model_alias(real_model, mode="geminicli")
+                    reroute_req = ClaudeRequest(**reroute_dict)
+
+                    log.info(
+                        f"[ANTIGRAVITY] Rerouting {real_model} web_search request to GeminiCLI endpoint"
+                    )
+                    return await geminicli_anthropic_messages(reroute_req, token=_token)
+                except Exception as e:
+                    log.warning(
+                        f"[ANTIGRAVITY] GeminiCLI reroute failed for {real_model}, falling back to strip: {e}"
+                    )
+                    filtered = [t for t in tools if not (
+                        t.get("type", "").startswith("web_search") or
+                        t.get("name", "") in WEB_SEARCH_PATTERNS
+                    )]
+                    normalized_dict["tools"] = filtered if filtered else None
+
     if real_model not in ANTIGRAVITY_SEARCH_MODELS:
-        tools = normalized_dict.get("tools")
         if tools and isinstance(tools, list):
             from src.converter.anthropic2gemini import WEB_SEARCH_PATTERNS
             filtered = [t for t in tools if not (
