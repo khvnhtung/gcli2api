@@ -371,9 +371,9 @@ async def stream_request(
             effort_budget_map = {
                 "LOW": 4096,       # Fast: minimal thinking for simple tasks
                 "MEDIUM": 16384,   # Balanced: standard reasoning depth
-                "HIGH": 32768,     # Deep: full thinking for complex tasks
+                "HIGH": 32000,     # Deep: matches Claude Code's default (31999 rounded)
             }
-            target_budget = effort_budget_map.get(effort, 32768)
+            target_budget = effort_budget_map.get(effort, 32000)
             thinking_config = gen_config.get("thinkingConfig")
             if isinstance(thinking_config, dict):
                 # gemini_fix.py converts to snake_case for Claude models
@@ -1008,9 +1008,9 @@ async def non_stream_request(
             effort_budget_map = {
                 "LOW": 4096,
                 "MEDIUM": 16384,
-                "HIGH": 32768,
+                "HIGH": 32000,
             }
-            target_budget = effort_budget_map.get(effort, 32768)
+            target_budget = effort_budget_map.get(effort, 32000)
             thinking_config = gen_config.get("thinkingConfig")
             if isinstance(thinking_config, dict):
                 if "thinking_budget" in thinking_config:
