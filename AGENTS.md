@@ -487,43 +487,52 @@ This is used when Claude models need search (future feature).
 
 ## Companion Tools
 
-### mcp-gcli2api-search
+### mcp-gcli2api-tools
 
-MCP server for web search via gcli2api's Gemini googleSearch integration.
+MCP server for web search + image reading via gcli2api.
 
-**Repository**: https://github.com/khvnhtung/mcp-gcli2api-search
+**Repository**: https://github.com/khvnhtung/mcp-gcli2api-tools
 
 **Tools provided**:
 - `web_search`: Search the web using Google Search grounding
 - `fetch_page`: Fetch and summarize content from a URL
+- `read_image`: Analyze images (OCR/describe/classify) from local path, URL/data URL, or base64
 
 **Quick commands**:
 ```bash
 # Check service status
-systemctl --user status mcp-gcli2api-search
+systemctl --user status mcp-gcli2api-tools
 
 # Restart service
-systemctl --user restart mcp-gcli2api-search
+systemctl --user restart mcp-gcli2api-tools
 
 # View logs
-journalctl --user -u mcp-gcli2api-search -f
+journalctl --user -u mcp-gcli2api-tools -f
 
-# Health check
+# Health check (local)
 curl -s http://localhost:3100/health | jq
+
+# Health check (Cloudflare tunnel)
+curl -s https://mcpsearch.fireflyrelay.space/health | jq
 
 # Test search
 curl -s -X POST http://localhost:3100/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_search","arguments":{"query":"test"}}}' | jq
+
+# Test image reading
+curl -s -X POST http://localhost:3100/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_image","arguments":{"prompt":"Read all visible text","image_path":"/tmp/screenshot.png"}}}' | jq
 ```
 
-**Configuration** (in `~/.config/systemd/user/mcp-gcli2api-search.service`):
+**Configuration** (in `~/.config/systemd/user/mcp-gcli2api-tools.service`):
 - `GCLI2API_URL`: gcli2api server URL (default: `http://127.0.0.1:7861`)
 - `GCLI2API_PASSWORD`: API password
-- `SEARCH_MODEL`: Model for search (`gemini-3-flash` or `gemini-3-pro-high`)
+- `SEARCH_MODEL`: Search model (recommended: `gemini-2.5-flash`)
+- `IMAGE_MODEL`: Primary image model (default: `gemini-3-flash`)
+- `IMAGE_FALLBACK_MODEL`: Fallback image model (default: `gemini-2.5-flash`)
 - `THINKING_BUDGET`: Thinking tokens (0=off, 1024-32000)
-
-**Note**: The MCP server forces `gemini-3-flash` if any `2.5` model is specified. This is intentional to deprecate older models.
 
 ## Antigravity Porting Decision Log
 
@@ -641,4 +650,3 @@ Why we enabled it:
 **Image support confirmed:**
 - Claude Opus 4.6 on Antigravity: `supports_images = true` (tested 2026-02-15, responded correctly to image input)
 - Claude Opus 4.5: deprecated, redirects to 4.6
-

@@ -360,14 +360,20 @@ async def messages(
                 log.info(f"[ANTIGRAVITY] Stripped web_search tools for {real_model} (not supported)")
                 normalized_dict["tools"] = filtered if filtered else None
 
+    bypass_image_offload = str(
+        request.headers.get("x-gcli2api-bypass-image-offload", "")
+    ).lower() in {"1", "true", "yes", "on"}
+
     # ========== Optional image offload (image -> short description) ==========
-    if await get_image_offload_enabled():
+    if await get_image_offload_enabled() and not bypass_image_offload:
         try:
             from src.converter.image_offload import process_payload
 
             normalized_dict = await process_payload(normalized_dict)
         except Exception as e:
             log.warning(f"[ANTIGRAVITY-ANTHROPIC] Image offload skipped due to error: {e}")
+    elif bypass_image_offload:
+        log.info("[ANTIGRAVITY-ANTHROPIC] Bypassing image offload via request header")
 
     # 转换为 Gemini 格式 (使用 converter)
     from src.converter.anthropic2gemini import anthropic_to_gemini_request
@@ -874,13 +880,19 @@ async def count_tokens(
     # Native countTokens via Gemini API, fall back to local estimation
     input_tokens = 0
     try:
-        if await get_image_offload_enabled():
+        bypass_image_offload = str(
+            request.headers.get("x-gcli2api-bypass-image-offload", "")
+        ).lower() in {"1", "true", "yes", "on"}
+
+        if await get_image_offload_enabled() and not bypass_image_offload:
             try:
                 from src.converter.image_offload import process_payload
 
                 payload = await process_payload(payload)
             except Exception as e:
                 log.warning(f"[ANTIGRAVITY-ANTHROPIC] Image offload skipped in count_tokens: {e}")
+        elif bypass_image_offload:
+            log.info("[ANTIGRAVITY-ANTHROPIC] Bypassing image offload in count_tokens via request header")
 
         native_count = await count_tokens_native(payload)
         if native_count is not None:
