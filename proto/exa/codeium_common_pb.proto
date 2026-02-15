@@ -1,0 +1,912 @@
+// Reconstructed from Antigravity app bundle (jetskiAgent/main.js)
+// Package: exa.codeium_common_pb
+// Common types shared across the Codeium/Windsurf platform.
+// Only types directly referenced by cortex_pb, language_server_pb, and
+// jetski_cortex_pb are fully defined here. Others are stubs.
+
+syntax = "proto3";
+
+package exa.codeium_common_pb;
+
+import "google/protobuf/timestamp.proto";
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum ModelId {
+  MODEL_ID_UNSPECIFIED = 0;
+  // Actual enum values are extensive (100+ model IDs).
+  // Only the default is defined here.
+}
+
+enum ModelType {
+  MODEL_TYPE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum ApiProvider {
+  API_PROVIDER_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum PromptTemplaterType {
+  PROMPT_TEMPLATER_TYPE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum ToolFormatterType {
+  TOOL_FORMATTER_TYPE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum TerminalShellCommandStatus {
+  TERMINAL_SHELL_COMMAND_STATUS_UNSPECIFIED = 0;
+  // Additional values TBD (RUNNING, COMPLETED, etc.)
+}
+
+enum TerminalShellCommandSource {
+  TERMINAL_SHELL_COMMAND_SOURCE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum TeamStatus {
+  TEAM_STATUS_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum RefreshCustomizationType {
+  REFRESH_CUSTOMIZATION_TYPE_UNSPECIFIED = 0;
+  REFRESH_CUSTOMIZATION_TYPE_RULE = 1;
+  REFRESH_CUSTOMIZATION_TYPE_WORKFLOW = 2;
+  REFRESH_CUSTOMIZATION_TYPE_SKILL = 3;
+}
+
+// ============================================================================
+// Metadata (used as request metadata in most RPCs)
+// ============================================================================
+
+message Metadata {
+  string ide_name = 1;
+  string ide_version = 7;
+  string extension_name = 12;
+  string extension_version = 2;
+  string extension_path = 17;
+  string locale = 4;
+  string os = 5;
+  string hardware = 8;
+  string session_id = 10;
+  string device_fingerprint = 24;
+  string user_tier_id = 29;
+  google.protobuf.Timestamp ls_timestamp = 16;
+  string trigger_id = 25;
+  string id = 27;
+  string api_key = 3;
+  bool disable_telemetry = 6;
+  repeated string user_tags = 18;
+  string region_code = 30;
+}
+
+// ============================================================================
+// Model Configuration
+// ============================================================================
+
+message ModelInfo {
+  ModelId model_id = 1;
+  bool is_internal = 2;
+  ModelType model_type = 3;
+  int32 max_tokens = 4;
+  string tokenizer_type = 5;
+  ModelFeatures model_features = 6;
+  ApiProvider api_provider = 7;
+  string model_name = 8;
+  bool supports_context = 9;
+  int32 embed_dim = 10;
+  string base_url = 11;
+  string chat_model_name = 12;
+  int32 max_output_tokens = 13;
+  PromptTemplaterType prompt_templater_type = 14;
+  ToolFormatterType tool_formatter_type = 15;
+  int32 thinking_budget = 16;
+  int32 min_thinking_budget = 17;
+}
+
+message ModelFeatures {
+  // Stub - model feature flags
+}
+
+message ModelOrAlias {
+  // Stub - model or alias reference
+}
+
+message RequestedModel {
+  // Stub - requested model specification
+}
+
+message ModelConfig {
+  // Stub - generic model configuration
+}
+
+message ModelStatusInfo {
+  // Stub - model status information
+}
+
+message CascadeModelConfigData {
+  // Stub - cascade model configuration data
+}
+
+message ClientModelConfig {
+  // Stub - client model config
+}
+
+message ClientModelGroup {
+  // Stub - client model group
+}
+
+message ClientModelSort {
+  // Stub - client model sort order
+}
+
+message AllowedModelConfig {
+  // Stub - allowed model config
+}
+
+message DefaultOverrideModelConfig {
+  // Stub - default override model config
+}
+
+message ExternalModel {
+  // Stub - external model definition
+}
+
+// ============================================================================
+// Experiment Configuration
+// ============================================================================
+
+enum ExperimentKey {
+  EXPERIMENT_KEY_UNSPECIFIED = 0;
+  // Actual enum has 100+ experiment keys
+}
+
+message ExperimentConfig {
+  repeated ExperimentWithVariant experiments = 6;
+  repeated ExperimentKey force_enable_experiments = 1;
+  repeated ExperimentKey force_disable_experiments = 2;
+  repeated ExperimentWithVariant force_enable_experiments_with_variants = 3;
+  repeated string force_enable_experiment_strings = 4;
+  repeated string force_disable_experiment_strings = 5;
+  bool dev_mode = 7;
+}
+
+message ExperimentWithVariant {
+  // Stub - experiment with variant specification
+}
+
+message Experiment {
+  // Stub - experiment definition
+}
+
+// ============================================================================
+// Tool Calls
+// ============================================================================
+
+message ChatToolCall {
+  string id = 1;
+  string name = 2;
+  string arguments_json = 3;
+  string invalid_json_str = 4;
+  string invalid_json_err = 5;
+  string thought_signature = 6;
+  bytes thinking_signature = 7;
+}
+
+// ============================================================================
+// Context and Scope
+// ============================================================================
+
+message ContextScopeItem {
+  oneof scope_item {
+    PathScopeItem file = 1;
+    PathScopeItem directory = 2;
+    RepositoryScopeItem repository = 3;
+    CodeContextItem code_context = 4;
+    CciWithSubrange cci_with_subrange = 6;
+    RepositoryPathScopeItem repository_path = 7;
+    ExternalScopeItem slack = 8;
+    ExternalScopeItem github = 9;
+    FileLineRange file_line_range = 10;
+    TextBlock text_block = 11;
+    ExternalScopeItem jira = 12;
+    ExternalScopeItem google_drive = 13;
+    ConsoleLogScopeItem console_log = 14;
+    DOMElementScopeItem dom_element = 15;
+    RecipeScopeItem recipe = 16;
+    ExternalScopeItem knowledge = 17;
+    RuleScopeItem rule = 18;
+    McpResourceItem mcp_resource = 19;
+    BrowserPageScopeItem browser_page = 20;
+    BrowserCodeBlockScopeItem browser_code_block = 21;
+    BrowserTextScopeItem browser_text = 22;
+    ConversationScopeItem conversation = 23;
+    UserActivityScopeItem user_activity = 24;
+    TerminalScopeItem terminal = 25;
+  }
+}
+
+message ContextScope {
+  // Stub - context scope container
+}
+
+message TextOrScopeItem {
+  oneof chunk {
+    string text = 1;
+    ContextScopeItem item = 2;
+  }
+}
+
+message CodeContextItem {
+  // Stub - code context item (file ranges, symbols, etc.)
+}
+
+message CciWithSubrange {
+  // Stub - code context item with subrange
+}
+
+message PathScopeItem {
+  // Stub - file/directory path scope item
+}
+
+message RepositoryScopeItem {
+  // Stub - repository scope item
+}
+
+message RepositoryPathScopeItem {
+  // Stub - repository path scope item
+}
+
+message ExternalScopeItem {
+  // Stub - external integration scope item (Slack, GitHub, Jira, etc.)
+}
+
+message FileLineRange {
+  // Stub - file line range
+}
+
+message TextBlock {
+  // Stub - text block scope item
+}
+
+message ConsoleLogScopeItem {
+  // Stub - console log scope item
+}
+
+message DOMElementScopeItem {
+  // Stub - DOM element scope item
+}
+
+message RecipeScopeItem {
+  // Stub - recipe scope item
+}
+
+message RuleScopeItem {
+  // Stub - rule scope item
+}
+
+message McpResourceItem {
+  // Stub - MCP resource scope item
+}
+
+message BrowserPageScopeItem {
+  // Stub - browser page scope item
+}
+
+message BrowserCodeBlockScopeItem {
+  // Stub - browser code block scope item
+}
+
+message BrowserTextScopeItem {
+  // Stub - browser text scope item
+}
+
+message ConversationScopeItem {
+  // Stub - conversation scope item
+}
+
+message UserActivityScopeItem {
+  // Stub - user activity scope item
+}
+
+message TerminalScopeItem {
+  // Stub - terminal scope item
+}
+
+message KnowledgeBaseScopeItem {
+  // Stub - knowledge base scope item
+}
+
+// ============================================================================
+// Document Types
+// ============================================================================
+
+message Document {
+  // Stub - document representation (file content, language, URI, etc.)
+}
+
+message DocumentPosition {
+  // Stub - document position (line, column)
+}
+
+message DocumentOutline {
+  // Stub - document outline (symbols tree)
+}
+
+message DocumentOutlineElement {
+  // Stub - document outline element
+}
+
+message DocumentLinesElement {
+  // Stub - document lines element
+}
+
+message DocumentQuery {
+  // Stub - document query
+}
+
+message EditorOptions {
+  // Stub - editor options (tab size, indentation, etc.)
+}
+
+// ============================================================================
+// Terminal Shell Commands
+// ============================================================================
+
+message TerminalShellCommand {
+  string id = 10;
+  uint32 shell_pid = 1;
+  string command_line = 2;
+  string cwd = 3;
+  bytes output = 4;
+  optional int32 exit_code = 5;
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp end_time = 7;
+  google.protobuf.Timestamp last_updated_time = 11;
+  TerminalShellCommandStatus status = 8;
+  TerminalShellCommandSource source = 9;
+}
+
+message TerminalShellCommandHeader {
+  Metadata metadata = 7;
+  string terminal_id = 1;
+  uint32 shell_pid = 2;
+  string command_line = 3;
+  string cwd = 4;
+  google.protobuf.Timestamp start_time = 5;
+  TerminalShellCommandSource source = 6;
+}
+
+message TerminalShellCommandStreamChunk {
+  oneof value {
+    TerminalShellCommandHeader header = 1;
+    TerminalShellCommandData data = 2;
+    TerminalShellCommandTrailer trailer = 3;
+  }
+}
+
+message TerminalShellCommandData {
+  bytes raw_data = 1;
+}
+
+message TerminalShellCommandTrailer {
+  optional int32 exit_code = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message TerminalCommandData {
+  string terminal_id = 1;
+  string platform = 2;
+  string cwd = 3;
+  string shell_name = 4;
+}
+
+// ============================================================================
+// Artifacts
+// ============================================================================
+
+message ArtifactComment {
+  // Stub - artifact comment
+}
+
+message ArtifactMetadata {
+  // Stub - artifact metadata
+}
+
+message ArtifactSelection {
+  // Stub - artifact selection
+}
+
+message ArtifactSelectionTarget {
+  // Stub - artifact selection target
+}
+
+message ArtifactFullFileTarget {
+  // Stub - artifact full file target
+}
+
+message ArtifactImageSelection {
+  // Stub - artifact image selection
+}
+
+// ============================================================================
+// Knowledge Base
+// ============================================================================
+
+message KnowledgeBaseItem {
+  // Stub - knowledge base item
+}
+
+message KnowledgeBaseItemWithMetadata {
+  // Stub - knowledge base item with metadata
+}
+
+message KnowledgeBaseGroup {
+  // Stub - knowledge base group
+}
+
+message KnowledgeBaseChunk {
+  // Stub - knowledge base chunk
+}
+
+// ============================================================================
+// MCP Server Configuration
+// ============================================================================
+
+message McpServerConfig {
+  // Stub - MCP server config
+}
+
+message McpServerTemplate {
+  // Stub - MCP server template
+}
+
+message McpServerCommand {
+  // Stub - MCP server command
+}
+
+message McpCommandTemplate {
+  // Stub - MCP command template
+}
+
+message McpCommandVariable {
+  // Stub - MCP command variable
+}
+
+message McpLocalServer {
+  // Stub - local MCP server
+}
+
+message McpRemoteServer {
+  // Stub - remote MCP server
+}
+
+// ============================================================================
+// User Types
+// ============================================================================
+
+message UserStatus {
+  bool pro = 1;
+  bool disable_telemetry = 2;
+  string name = 3;
+  bool ignore_chat_telemetry_setting = 4;
+  string team_id = 5;
+  TeamStatus team_status = 6;
+  string email = 7;
+  // repeated UserFeature user_features = 9;
+  // repeated TeamsFeature teams_features = 8;
+  // repeated Permission permissions = 11;
+  PlanInfo plan_info = 12;
+  PlanStatus plan_status = 13;
+  bool has_used_antigravity = 31;
+  int64 user_used_prompt_credits = 28;
+  int64 user_used_flow_credits = 29;
+  bool has_fingerprint_set = 30;
+  TeamConfig team_config = 32;
+  CascadeModelConfigData cascade_model_config_data = 33;
+  bool accepted_latest_terms_of_service = 34;
+  string g1_tier = 35;
+  // UserTier user_tier = 36;
+  bool user_data_collection_force_disabled = 37;
+}
+
+message UserSettings {
+  // Large settings message - key fields only
+  bool open_most_recent_chat_conversation = 1;
+  ModelId last_selected_model = 2;
+  string last_selected_model_name = 8;
+  optional ModelId last_selected_cascade_model = 9;
+  optional ModelOrAlias last_selected_cascade_model_or_alias = 30;
+  repeated string cascade_allowed_commands = 14;
+  repeated string cascade_denied_commands = 15;
+  bool cascade_web_search_disabled = 18;
+  bool disable_auto_open_edited_files = 25;
+  bool allow_cascade_access_gitignore_files = 31;
+  bool allow_agent_access_non_workspace_files = 79;
+  bool disable_cascade_auto_fix_lints = 32;
+  bool disable_auto_generate_memories = 39;
+  bool allow_cascade_in_background = 42;
+  bool disable_cascade_in_background = 48;
+  repeated string custom_workspace = 50;
+  repeated string relative_working_dir_paths = 66;
+  map<string, ExternalModel> custom_models = 68;
+  bool disable_code_snippet_telemetry = 69;
+  bool secure_mode_enabled = 82;
+}
+
+message UserNUXState {
+  // Stub - user NUX (New User Experience) state
+}
+
+message PlanInfo {
+  // Stub - plan information
+}
+
+message PlanStatus {
+  // Stub - plan status
+}
+
+message QuotaInfo {
+  // Stub - quota information
+}
+
+message TopUpStatus {
+  // Stub - top-up status
+}
+
+message TeamConfig {
+  // Stub - team configuration
+}
+
+message TeamOrganizationalControls {
+  // Stub - team organizational controls
+}
+
+message TeamsFeaturesMetadata {
+  // Stub - teams features metadata
+}
+
+// ============================================================================
+// Git / SCM
+// ============================================================================
+
+message GitRepoInfo {
+  // Stub - git repository info
+}
+
+message ScmWorkspaceInfo {
+  // Stub - SCM workspace info
+}
+
+message Repository {
+  // Stub - repository
+}
+
+message RepositoryPath {
+  // Stub - repository path
+}
+
+// ============================================================================
+// Browser Types
+// ============================================================================
+
+message BrowserStateSnapshot {
+  // Stub - browser state snapshot
+}
+
+message BrowserPageMetadata {
+  // Stub - browser page metadata
+}
+
+message BrowserInteraction {
+  // Stub - browser interaction
+}
+
+message BrowserClickInteraction {
+  // Stub - browser click interaction
+}
+
+message BrowserScrollInteraction {
+  // Stub - browser scroll interaction
+}
+
+message DOMTree {
+  // Stub - DOM tree
+}
+
+message DOMNode {
+  // Stub - DOM node
+}
+
+message Point2 {
+  // Stub - 2D point
+}
+
+// ============================================================================
+// Diagnostics / Linting
+// ============================================================================
+
+message CodeDiagnostic {
+  // Stub - code diagnostic
+}
+
+message LanguageServerDiagnostics {
+  // Stub - language server diagnostics
+}
+
+message LspReference {
+  // Stub - LSP reference
+}
+
+// ============================================================================
+// Media
+// ============================================================================
+
+message Media {
+  // Stub - media content (images, video, etc.)
+}
+
+message ImageData {
+  // Stub - image data
+}
+
+// ============================================================================
+// Events / Telemetry
+// ============================================================================
+
+message Event {
+  // Stub - telemetry event
+}
+
+message ProductEvent {
+  // Stub - product event
+}
+
+message AnalyticsEventMetadata {
+  // Stub - analytics event metadata
+}
+
+message LogEvent {
+  // Stub - log event
+}
+
+message LogRequest {
+  // Stub - log request
+}
+
+message LogResponse {
+  // Stub - log response
+}
+
+message MetricsRecord {
+  // Stub - metrics record
+}
+
+message MetricsMetadata {
+  // Stub - metrics metadata
+}
+
+// ============================================================================
+// Completions
+// ============================================================================
+
+message Completion {
+  // Stub - completion
+}
+
+message CompletionResponse {
+  // Stub - completion response
+}
+
+message CompletionsRequest {
+  // Stub - completions request
+}
+
+message CompletionLatencyInfo {
+  // Stub - completion latency info
+}
+
+message StreamingCompletion {
+  // Stub - streaming completion
+}
+
+message StreamingCompletionResponse {
+  // Stub - streaming completion response
+}
+
+message StreamingCompletionInfo {
+  // Stub - streaming completion info
+}
+
+// ============================================================================
+// Rules / Guidelines
+// ============================================================================
+
+message Rule {
+  // Stub - rule definition
+}
+
+message RuleViolation {
+  // Stub - rule violation
+}
+
+message Guideline {
+  // Stub - guideline
+}
+
+message GuidelineItem {
+  // Stub - guideline item
+}
+
+// ============================================================================
+// Misc Types
+// ============================================================================
+
+message Status {
+  // Stub - generic status
+}
+
+message GRPCStatus {
+  // Stub - gRPC status
+}
+
+message Range {
+  // Stub - range (start, end positions)
+}
+
+message ContextSubrange {
+  // Stub - context subrange
+}
+
+message TextSelection {
+  // Stub - text selection
+}
+
+message TextData {
+  // Stub - text data
+}
+
+message MarkdownChunk {
+  // Stub - markdown chunk
+}
+
+message Blobref {
+  // Stub - blob reference
+}
+
+message Citation {
+  // Stub - citation
+}
+
+message CitationMetadata {
+  // Stub - citation metadata
+}
+
+message WorkspacePath {
+  // Stub - workspace path
+}
+
+message WorkingDirectoryInfo {
+  // Stub - working directory info
+}
+
+message PinnedContext {
+  // Stub - pinned context
+}
+
+message PinnedContextConfig {
+  // Stub - pinned context config
+}
+
+message DefaultPinnedContextConfig {
+  // Stub - default pinned context config
+}
+
+message IntellisenseSuggestion {
+  // Stub - intellisense suggestion
+}
+
+message ActionPointer {
+  string cortex_plan_id = 1;
+  string code_plan_id = 2;
+  int32 action_index = 3;
+}
+
+message SuperCompleteFilterReason {
+  // Stub - super complete filter reason
+}
+
+message DiffCommentInfo {
+  // Stub - diff comment info
+}
+
+message FileComment {
+  // Stub - file comment
+}
+
+message FileCommentInfo {
+  // Stub - file comment info
+}
+
+message FileDiffComment {
+  // Stub - file diff comment
+}
+
+message CodeAnnotation {
+  // Stub - code annotation
+}
+
+message CodeAnnotationsState {
+  // Stub - code annotations state
+}
+
+message TrajectoryDescription {
+  // Stub - trajectory description
+}
+
+message WebDocsOption {
+  // Stub - web docs option
+}
+
+message CascadeNUXConfig {
+  // Stub - cascade NUX config
+}
+
+message CascadeNUXState {
+  // Stub - cascade NUX state
+}
+
+message UnleashContext {
+  // Stub - unleash feature flag context
+}
+
+message ConversationBrainConfig {
+  // Stub - conversation brain config
+}
+
+message ObservabilityData {
+  // Stub - observability data
+}
+
+message ClientInfo {
+  // Stub - client info
+}
+
+message ErrorTrace {
+  // Stub - error trace
+}
+
+message ErrorTraceMetadata {
+  // Stub - error trace metadata
+}
+
+message WorkspaceStats {
+  // Stub - workspace stats
+}
+
+message WorkspaceIndexData {
+  // Stub - workspace index data
+}
+
+message FeatureUsageData {
+  // Stub - feature usage data
+}
+
+message ModelUsageStats {
+  // Stub - model usage stats
+}
+
+message ModelNotification {
+  // Stub - model notification
+}
+
+message ThirdPartyWebSearchConfig {
+  // Stub - third party web search config
+}

@@ -1,0 +1,110 @@
+// Reconstructed from Antigravity app bundle (jetskiAgent/main.js)
+// Package: exa.jetski_cortex_pb
+// Jetski-specific Cascade/Cortex state types used by the reactive streaming layer.
+
+syntax = "proto3";
+
+package exa.jetski_cortex_pb;
+
+import "google/protobuf/timestamp.proto";
+import "exa/cortex_pb.proto";
+
+// ============================================================================
+// Cascade State (streamed via reactive updates)
+// ============================================================================
+
+message CascadeState {
+  string cascade_id = 1;
+  exa.cortex_pb.Trajectory trajectory = 2;
+  exa.cortex_pb.CascadeRunStatus status = 3;
+  exa.cortex_pb.ExecutorMetadata executor_metadata = 4;
+  repeated exa.cortex_pb.Step queued_steps = 5;
+  repeated exa.cortex_pb.ArtifactSnapshot artifact_snapshots = 6;
+  exa.cortex_pb.CascadeRunStatus executable_status = 7;
+  exa.cortex_pb.CascadeRunStatus executor_loop_status = 8;
+}
+
+// ============================================================================
+// Trajectory Summaries (streamed via reactive updates)
+// ============================================================================
+
+message CascadeTrajectorySummaries {
+  map<string, CascadeTrajectorySummary> summaries = 1;
+}
+
+message CascadeTrajectorySummary {
+  string summary = 1;
+  uint32 step_count = 2;
+  google.protobuf.Timestamp last_modified_time = 3;
+  string trajectory_id = 4;
+  exa.cortex_pb.CascadeRunStatus status = 5;
+  google.protobuf.Timestamp created_time = 7;
+  repeated CortexTrajectoryStepWithIndex waiting_steps = 8;
+  repeated WorkspaceReference workspaces = 9;
+  google.protobuf.Timestamp last_user_input_time = 10;
+  optional uint32 last_user_input_step_index = 16;
+  CortexTrajectoryStepWithIndex latest_notify_user_step = 12;
+  CortexTrajectoryStepWithIndex latest_task_boundary_step = 14;
+  ConversationAnnotations annotations = 15;
+}
+
+message WorkspaceReference {
+  // Stub - workspace reference within a trajectory summary
+}
+
+// ============================================================================
+// Conversation Annotations
+// ============================================================================
+
+message ConversationAnnotations {
+  optional string title = 1;
+  repeated string tags = 3;
+  optional bool archived = 4;
+  google.protobuf.Timestamp archival_status_timestamp = 5;
+  optional bool starred = 6;
+  google.protobuf.Timestamp last_user_view_time = 7;
+}
+
+// ============================================================================
+// Step Updates
+// ============================================================================
+
+message CortexStepUpdate {
+  uint32 step_index = 1;
+
+  oneof update {
+    exa.cortex_pb.Step step = 2;
+    exa.cortex_pb.CortexStepStatus status = 3;
+  }
+}
+
+message CortexTrajectoryStepWithIndex {
+  exa.cortex_pb.Step step = 1;
+  uint32 step_index = 2;
+}
+
+// ============================================================================
+// Base Trajectory Identifier (used in StartCascade)
+// ============================================================================
+
+message BaseTrajectoryIdentifier {
+  oneof identifier {
+    string cascade_id = 1;
+    string implicit_trajectory_file_uri = 2;
+    bool last_active_doc = 3;
+    exa.cortex_pb.Trajectory trajectory = 4;
+  }
+}
+
+// ============================================================================
+// Implicit Trajectory
+// ============================================================================
+
+message ImplicitTrajectory {
+  exa.cortex_pb.Trajectory trajectory = 1;
+  TrajectoryScope trajectory_scope = 5;
+}
+
+message TrajectoryScope {
+  // Stub - defines the scope/context of an implicit trajectory
+}

@@ -1,0 +1,976 @@
+// Reconstructed from Antigravity app bundle (jetskiAgent/main.js)
+// Package: exa.cortex_pb
+// NOTE: Field numbers, names, and types are extracted from proto3 field lists.
+//       Some referenced message types may be stubs if their full definitions
+//       were not extracted. Scalar type mappings:
+//       T:1=double, T:2=float, T:3=int64, T:4=uint64, T:5=int32,
+//       T:8=bool, T:9=string, T:12=bytes, T:13=uint32, T:17=sint32
+
+syntax = "proto3";
+
+package exa.cortex_pb;
+
+import "google/protobuf/timestamp.proto";
+import "exa/chat_pb.proto";
+import "exa/codeium_common_pb.proto";
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum CortexStepType {
+  CORTEX_STEP_TYPE_UNSPECIFIED = 0;
+  CORTEX_STEP_TYPE_DUMMY = 1;
+  CORTEX_STEP_TYPE_FINISH = 2;
+  CORTEX_STEP_TYPE_PLAN_INPUT = 3;
+  CORTEX_STEP_TYPE_MQUERY = 4;
+  CORTEX_STEP_TYPE_CODE_ACTION = 5;
+  CORTEX_STEP_TYPE_GIT_COMMIT = 6;
+  CORTEX_STEP_TYPE_GREP_SEARCH = 7;
+  CORTEX_STEP_TYPE_VIEW_FILE = 8;
+  CORTEX_STEP_TYPE_LIST_DIRECTORY = 9;
+  CORTEX_STEP_TYPE_COMPILE = 10;
+  CORTEX_STEP_TYPE_VIEW_CODE_ITEM = 13;
+  CORTEX_STEP_TYPE_USER_INPUT = 14;
+  CORTEX_STEP_TYPE_PLANNER_RESPONSE = 15;
+  CORTEX_STEP_TYPE_ERROR_MESSAGE = 17;
+  CORTEX_STEP_TYPE_RUN_COMMAND = 21;
+  CORTEX_STEP_TYPE_CHECKPOINT = 23;
+  CORTEX_STEP_TYPE_PROPOSE_CODE = 24;
+  CORTEX_STEP_TYPE_FIND = 25;
+  CORTEX_STEP_TYPE_SUGGESTED_RESPONSES = 27;
+  CORTEX_STEP_TYPE_COMMAND_STATUS = 28;
+  CORTEX_STEP_TYPE_MEMORY = 29;
+  CORTEX_STEP_TYPE_READ_URL_CONTENT = 31;
+  CORTEX_STEP_TYPE_VIEW_CONTENT_CHUNK = 32;
+  CORTEX_STEP_TYPE_SEARCH_WEB = 33;
+  CORTEX_STEP_TYPE_RETRIEVE_MEMORY = 34;
+  CORTEX_STEP_TYPE_MCP_TOOL = 38;
+  CORTEX_STEP_TYPE_MANAGER_FEEDBACK = 39;
+  CORTEX_STEP_TYPE_TOOL_CALL_PROPOSAL = 40;
+  CORTEX_STEP_TYPE_TOOL_CALL_CHOICE = 41;
+  CORTEX_STEP_TYPE_TRAJECTORY_CHOICE = 42;
+  CORTEX_STEP_TYPE_CLIPBOARD = 45;
+  CORTEX_STEP_TYPE_VIEW_FILE_OUTLINE = 47;
+  CORTEX_STEP_TYPE_POST_PR_REVIEW = 49;
+  CORTEX_STEP_TYPE_LIST_RESOURCES = 51;
+  CORTEX_STEP_TYPE_READ_RESOURCE = 52;
+  CORTEX_STEP_TYPE_LINT_DIFF = 53;
+  CORTEX_STEP_TYPE_FIND_ALL_REFERENCES = 54;
+  CORTEX_STEP_TYPE_BRAIN_UPDATE = 55;
+  CORTEX_STEP_TYPE_OPEN_BROWSER_URL = 56;
+  CORTEX_STEP_TYPE_RUN_EXTENSION_CODE = 57;
+  CORTEX_STEP_TYPE_ADD_ANNOTATION = 58;
+  CORTEX_STEP_TYPE_PROPOSAL_FEEDBACK = 59;
+  CORTEX_STEP_TYPE_TRAJECTORY_SEARCH = 60;
+  CORTEX_STEP_TYPE_EXECUTE_BROWSER_JAVASCRIPT = 61;
+  CORTEX_STEP_TYPE_LIST_BROWSER_PAGES = 62;
+  CORTEX_STEP_TYPE_CAPTURE_BROWSER_SCREENSHOT = 63;
+  CORTEX_STEP_TYPE_CLICK_BROWSER_PIXEL = 64;
+  CORTEX_STEP_TYPE_READ_TERMINAL = 65;
+  CORTEX_STEP_TYPE_CAPTURE_BROWSER_CONSOLE_LOGS = 66;
+  CORTEX_STEP_TYPE_READ_BROWSER_PAGE = 67;
+  CORTEX_STEP_TYPE_BROWSER_GET_DOM = 68;
+  CORTEX_STEP_TYPE_CODE_SEARCH = 73;
+  CORTEX_STEP_TYPE_BROWSER_INPUT = 74;
+  CORTEX_STEP_TYPE_BROWSER_MOVE_MOUSE = 75;
+  CORTEX_STEP_TYPE_BROWSER_SELECT_OPTION = 76;
+  CORTEX_STEP_TYPE_BROWSER_SCROLL_UP = 77;
+  CORTEX_STEP_TYPE_BROWSER_SCROLL_DOWN = 78;
+  CORTEX_STEP_TYPE_BROWSER_CLICK_ELEMENT = 79;
+  CORTEX_STEP_TYPE_BROWSER_PRESS_KEY = 80;
+  CORTEX_STEP_TYPE_TASK_BOUNDARY = 81;
+  CORTEX_STEP_TYPE_NOTIFY_USER = 82;
+  CORTEX_STEP_TYPE_CODE_ACKNOWLEDGEMENT = 83;
+  CORTEX_STEP_TYPE_INTERNAL_SEARCH = 84;
+  CORTEX_STEP_TYPE_BROWSER_SUBAGENT = 85;
+  CORTEX_STEP_TYPE_FILE_CHANGE = 86;
+  CORTEX_STEP_TYPE_MOVE = 87;
+  CORTEX_STEP_TYPE_BROWSER_SCROLL = 88;
+  CORTEX_STEP_TYPE_KNOWLEDGE_GENERATION = 89;
+  CORTEX_STEP_TYPE_EPHEMERAL_MESSAGE = 90;
+  CORTEX_STEP_TYPE_GENERATE_IMAGE = 91;
+  CORTEX_STEP_TYPE_DELETE_DIRECTORY = 92;
+  CORTEX_STEP_TYPE_COMPILE_APPLET = 93;
+  CORTEX_STEP_TYPE_INSTALL_APPLET_DEPENDENCIES = 94;
+  CORTEX_STEP_TYPE_INSTALL_APPLET_PACKAGE = 95;
+  CORTEX_STEP_TYPE_BROWSER_RESIZE_WINDOW = 96;
+  CORTEX_STEP_TYPE_BROWSER_DRAG_PIXEL_TO_PIXEL = 97;
+  CORTEX_STEP_TYPE_CONVERSATION_HISTORY = 98;
+  CORTEX_STEP_TYPE_KNOWLEDGE_ARTIFACTS = 99;
+  CORTEX_STEP_TYPE_SEND_COMMAND_INPUT = 100;
+  CORTEX_STEP_TYPE_SYSTEM_MESSAGE = 101;
+  CORTEX_STEP_TYPE_WAIT = 102;
+  CORTEX_STEP_TYPE_AGENCY_TOOL_CALL = 103;
+  CORTEX_STEP_TYPE_SET_UP_FIREBASE = 108;
+  CORTEX_STEP_TYPE_RESTART_DEV_SERVER = 110;
+  CORTEX_STEP_TYPE_DEPLOY_FIREBASE = 111;
+  CORTEX_STEP_TYPE_SHELL_EXEC = 112;
+  CORTEX_STEP_TYPE_BROWSER_MOUSE_WHEEL = 113;
+  CORTEX_STEP_TYPE_LINT_APPLET = 114;
+  CORTEX_STEP_TYPE_DEFINE_NEW_ENV_VARIABLE = 115;
+  CORTEX_STEP_TYPE_KI_INSERTION = 116;
+  CORTEX_STEP_TYPE_BROWSER_MOUSE_UP = 120;
+  CORTEX_STEP_TYPE_BROWSER_MOUSE_DOWN = 121;
+  CORTEX_STEP_TYPE_WORKSPACE_API = 122;
+  CORTEX_STEP_TYPE_BROWSER_LIST_NETWORK_REQUESTS = 123;
+  CORTEX_STEP_TYPE_BROWSER_GET_NETWORK_REQUEST = 124;
+  CORTEX_STEP_TYPE_BROWSER_REFRESH_PAGE = 125;
+}
+
+enum CortexStepStatus {
+  CORTEX_STEP_STATUS_UNSPECIFIED = 0;
+  CORTEX_STEP_STATUS_PENDING = 1;
+  CORTEX_STEP_STATUS_RUNNING = 2;
+  CORTEX_STEP_STATUS_DONE = 3;
+  CORTEX_STEP_STATUS_INVALID = 4;
+  CORTEX_STEP_STATUS_CLEARED = 5;
+  CORTEX_STEP_STATUS_CANCELED = 6;
+  CORTEX_STEP_STATUS_ERROR = 7;
+  CORTEX_STEP_STATUS_GENERATING = 8;
+  CORTEX_STEP_STATUS_WAITING = 9;
+  CORTEX_STEP_STATUS_QUEUED = 11;
+  CORTEX_STEP_STATUS_INTERRUPTED = 12;
+}
+
+enum CascadeRunStatus {
+  CASCADE_RUN_STATUS_UNSPECIFIED = 0;
+  CASCADE_RUN_STATUS_IDLE = 1;
+  CASCADE_RUN_STATUS_RUNNING = 2;
+  CASCADE_RUN_STATUS_CANCELING = 3;
+  CASCADE_RUN_STATUS_BUSY = 4;
+}
+
+enum CortexTrajectoryType {
+  CORTEX_TRAJECTORY_TYPE_UNSPECIFIED = 0;
+  CORTEX_TRAJECTORY_TYPE_USER_MAINLINE = 1;
+  CORTEX_TRAJECTORY_TYPE_USER_GRANULAR = 2;
+  CORTEX_TRAJECTORY_TYPE_SUPERCOMPLETE = 3;
+  CORTEX_TRAJECTORY_TYPE_CASCADE = 4;
+  CORTEX_TRAJECTORY_TYPE_CHECKPOINT = 6;
+  CORTEX_TRAJECTORY_TYPE_APPLIER = 11;
+  CORTEX_TRAJECTORY_TYPE_TOOL_CALL_PROPOSAL = 12;
+  CORTEX_TRAJECTORY_TYPE_TRAJECTORY_CHOICE = 13;
+  CORTEX_TRAJECTORY_TYPE_LLM_JUDGE = 14;
+  CORTEX_TRAJECTORY_TYPE_BRAIN_UPDATE = 16;
+  CORTEX_TRAJECTORY_TYPE_INTERACTIVE_CASCADE = 17;
+  CORTEX_TRAJECTORY_TYPE_BROWSER = 20;
+  CORTEX_TRAJECTORY_TYPE_KNOWLEDGE_GENERATION = 21;
+}
+
+enum CortexTrajectorySource {
+  CORTEX_TRAJECTORY_SOURCE_UNSPECIFIED = 0;
+  CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT = 1;
+  CORTEX_TRAJECTORY_SOURCE_EXPLAIN_PROBLEM = 2;
+  CORTEX_TRAJECTORY_SOURCE_REFACTOR_FUNCTION = 3;
+  CORTEX_TRAJECTORY_SOURCE_EVAL = 4;
+  CORTEX_TRAJECTORY_SOURCE_EVAL_TASK = 5;
+  CORTEX_TRAJECTORY_SOURCE_ASYNC_PRR = 6;
+  CORTEX_TRAJECTORY_SOURCE_ASYNC_CF = 7;
+  CORTEX_TRAJECTORY_SOURCE_ASYNC_SL = 8;
+  CORTEX_TRAJECTORY_SOURCE_ASYNC_PRD = 9;
+  CORTEX_TRAJECTORY_SOURCE_ASYNC_CM = 10;
+  CORTEX_TRAJECTORY_SOURCE_INTERACTIVE_CASCADE = 12;
+  CORTEX_TRAJECTORY_SOURCE_REPLAY = 13;
+  CORTEX_TRAJECTORY_SOURCE_SDK = 15;
+}
+
+enum CortexStepSource {
+  CORTEX_STEP_SOURCE_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+enum CortexRequestSource {
+  CORTEX_REQUEST_SOURCE_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+enum ExecutorTerminationReason {
+  EXECUTOR_TERMINATION_REASON_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+enum FileChangeType {
+  FILE_CHANGE_TYPE_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+enum AutoRunDecision {
+  AUTO_RUN_DECISION_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+enum LintDiffType {
+  LINT_DIFF_TYPE_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+enum PermissionScope {
+  PERMISSION_SCOPE_UNSPECIFIED = 0;
+  // Additional values TBD from extraction
+}
+
+// ============================================================================
+// Core Step Message - gemini_coder.Step (mapped from Q0 / jde)
+// This is the polymorphic "CortexStep" with a massive oneof for step types
+// NOTE: The actual typeName in the bundle is "gemini_coder.Step"
+// ============================================================================
+
+message Step {
+  CortexStepType type = 1;
+  CortexStepStatus status = 4;
+  CortexStepMetadata metadata = 5;
+  CortexErrorDetails error = 31;
+  TrajectoryPermissions permissions = 133;
+
+  // Polymorphic step content - one of ~80 step types
+  oneof step {
+    CortexStepGeneric generic = 140;
+    CortexStepFinish finish = 12;
+    CortexStepMquery mquery = 9;
+    CortexStepCodeAction code_action = 10;
+    CortexStepGitCommit git_commit = 11;
+    CortexStepGrepSearch grep_search = 13;
+    CortexStepCompile compile = 16;
+    CortexStepViewCodeItem view_code_item = 22;
+    CortexStepErrorMessage error_message = 24;
+    CortexStepRunCommand run_command = 28;
+    CortexStepFind find = 34;
+    CortexStepSuggestedResponses suggested_responses = 36;
+    CortexStepCommandStatus command_status = 37;
+    CortexStepReadUrlContent read_url_content = 40;
+    CortexStepViewContentChunk view_content_chunk = 41;
+    CortexStepSearchWeb search_web = 42;
+    CortexStepMcpTool mcp_tool = 47;
+    CortexStepClipboard clipboard = 55;
+    CortexStepViewFileOutline view_file_outline = 58;
+    CortexStepListResources list_resources = 62;
+    CortexStepReadResource read_resource = 63;
+    CortexStepLintDiff lint_diff = 64;
+    CortexStepOpenBrowserUrl open_browser_url = 67;
+    CortexStepRunExtensionCode run_extension_code = 68;
+    CortexStepTrajectorySearch trajectory_search = 72;
+    CortexStepExecuteBrowserJavaScript execute_browser_javascript = 73;
+    CortexStepListBrowserPages list_browser_pages = 74;
+    CortexStepCaptureBrowserScreenshot capture_browser_screenshot = 75;
+    CortexStepClickBrowserPixel click_browser_pixel = 76;
+    CortexStepReadTerminal read_terminal = 77;
+    CortexStepCaptureBrowserConsoleLogs capture_browser_console_logs = 78;
+    CortexStepReadBrowserPage read_browser_page = 79;
+    CortexStepBrowserGetDom browser_get_dom = 80;
+    CortexStepCodeSearch code_search = 85;
+    CortexStepBrowserInput browser_input = 86;
+    CortexStepBrowserMoveMouse browser_move_mouse = 87;
+    CortexStepBrowserSelectOption browser_select_option = 88;
+    CortexStepBrowserScrollUp browser_scroll_up = 89;
+    CortexStepBrowserScrollDown browser_scroll_down = 90;
+    CortexStepBrowserClickElement browser_click_element = 91;
+    CortexStepBrowserListNetworkRequests browser_list_network_requests = 137;
+    CortexStepBrowserGetNetworkRequest browser_get_network_request = 138;
+    CortexStepBrowserPressKey browser_press_key = 92;
+    CortexStepTaskBoundary task_boundary = 93;
+    CortexStepNotifyUser notify_user = 94;
+    CortexStepCodeAcknowledgement code_acknowledgement = 95;
+    CortexStepInternalSearch internal_search = 96;
+    CortexStepBrowserSubagent browser_subagent = 97;
+    CortexStepKnowledgeGeneration knowledge_generation = 102;
+    CortexStepGenerateImage generate_image = 104;
+    CortexStepBrowserScroll browser_scroll = 101;
+    CortexStepBrowserResizeWindow browser_resize_window = 109;
+    CortexStepBrowserDragPixelToPixel browser_drag_pixel_to_pixel = 110;
+    CortexStepBrowserMouseWheel browser_mouse_wheel = 125;
+    CortexStepBrowserMouseUp browser_mouse_up = 134;
+    CortexStepBrowserMouseDown browser_mouse_down = 135;
+    CortexStepBrowserRefreshPage browser_refresh_page = 139;
+    CortexStepConversationHistory conversation_history = 111;
+    CortexStepKnowledgeArtifacts knowledge_artifacts = 112;
+    CortexStepSendCommandInput send_command_input = 113;
+    CortexStepSystemMessage system_message = 114;
+    CortexStepWait wait = 115;
+    CortexStepKIInsertion ki_insertion = 129;
+    CortexStepWorkspaceAPI workspace_api = 136;
+    CortexStepCompileApplet compile_applet = 106;
+    CortexStepInstallAppletDependencies install_applet_dependencies = 107;
+    CortexStepInstallAppletPackage install_applet_package = 108;
+    CortexStepSetUpFirebase set_up_firebase = 121;
+    CortexStepRestartDevServer restart_dev_server = 123;
+    CortexStepDeployFirebase deploy_firebase = 124;
+    CortexStepLintApplet lint_applet = 126;
+    CortexStepShellExec shell_exec = 127;
+    CortexStepDefineNewEnvVariable define_new_env_variable = 128;
+    CortexStepAgencyToolCall agency_tool_call = 116;
+    CortexStepUserInput user_input = 19;
+    CortexStepPlannerResponse planner_response = 20;
+    CortexStepViewFile view_file = 14;
+    CortexStepListDirectory list_directory = 15;
+    CortexStepDeleteDirectory delete_directory = 105;
+    CortexStepCheckpoint checkpoint = 30;
+    CortexStepFileChange file_change = 98;
+    CortexStepMove move = 100;
+    CortexStepEphemeralMessage ephemeral_message = 103;
+    CortexStepDummy dummy = 7;
+    CortexStepPlanInput plan_input = 8;
+    CortexStepFileBreakdown file_breakdown = 21;
+    CortexStepWriteToFile write_to_file = 23;
+    CortexStepProposeCode propose_code = 32;
+    CortexStepSearchKnowledgeBase search_knowledge_base = 35;
+    CortexStepLookupKnowledgeBase lookup_knowledge_base = 39;
+    CortexStepManagerFeedback manager_feedback = 48;
+    CortexStepToolCallProposal tool_call_proposal = 49;
+    CortexStepToolCallChoice tool_call_choice = 50;
+    CortexStepTrajectoryChoice trajectory_choice = 52;
+    CortexStepCheckDeployStatus check_deploy_status = 59;
+    CortexStepPostPrReview post_pr_review = 60;
+    CortexStepFindAllReferences find_all_references = 65;
+    CortexStepBrainUpdate brain_update = 66;
+    CortexStepAddAnnotation add_annotation = 70;
+    CortexStepProposalFeedback proposal_feedback = 71;
+    CortexStepRetrieveMemory retrieve_memory = 43;
+    CortexStepMemory memory = 38;
+  }
+
+  // Non-oneof fields
+  RequestedInteraction requested_interaction = 56;
+  UserStepAnnotations user_annotations = 69;
+  Trajectory subtrajectory = 6;
+}
+
+// ============================================================================
+// Trajectory - gemini_coder.Trajectory (mapped from zd / zde)
+// ============================================================================
+
+message Trajectory {
+  string trajectory_id = 1;
+  string cascade_id = 6;
+  CortexTrajectoryType trajectory_type = 4;
+  repeated Step steps = 2;
+  repeated CortexTrajectoryReference parent_references = 5;
+  repeated CortexStepGeneratorMetadata generator_metadata = 3;
+  repeated ExecutorMetadata executor_metadatas = 9;
+  CortexTrajectorySource source = 8;
+  CortexTrajectoryMetadata metadata = 7;
+}
+
+// ============================================================================
+// Step Metadata
+// ============================================================================
+
+message CortexStepMetadata {
+  uint32 step_generation_version = 21;
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp viewable_at = 6;
+  google.protobuf.Timestamp finished_generating_at = 7;
+  google.protobuf.Timestamp last_completed_chunk_at = 22;
+  google.protobuf.Timestamp completed_at = 8;
+  CortexStepSource source = 3;
+  exa.chat_pb.ToolCall tool_call = 4;
+  repeated string arguments_order = 5;
+  exa.chat_pb.ModelUsage model_usage = 9;
+  repeated RetryInfo retry_infos = 28;
+  float model_cost = 10;
+  exa.codeium_common_pb.ModelId generator_model = 11;
+  exa.codeium_common_pb.RequestedModel requested_model = 13;
+  exa.codeium_common_pb.ModelInfo model_info = 24;
+  string execution_id = 12;
+  int32 flow_credits_used = 14;
+  int32 prompt_credits_used = 15;
+  repeated CortexStepCreditReason non_standard_credit_reasons = 18;
+  repeated exa.chat_pb.ToolCall tool_call_choices = 16;
+  string tool_call_choice_reason = 17;
+  CortexRequestSource cortex_request_source = 19;
+  int32 tool_call_output_tokens = 23;
+  SourceTrajectoryStepInfo source_trajectory_step_info = 20;
+  SnapshotMetadata snapshot_metadata = 25;
+  CortexStepInternalMetadata internal_metadata = 26;
+  bool wait_for_previous_tools = 27;
+}
+
+message CortexErrorDetails {
+  // Stub - fields not yet extracted
+}
+
+message TrajectoryPermissions {
+  // Stub - fields not yet extracted
+}
+
+message RetryInfo {
+  // Stub - fields not yet extracted
+}
+
+message SourceTrajectoryStepInfo {
+  // Stub - fields not yet extracted
+}
+
+message SnapshotMetadata {
+  // Stub - fields not yet extracted
+}
+
+message CortexStepInternalMetadata {
+  // Stub - fields not yet extracted
+}
+
+message CortexStepCreditReason {
+  // Enum - values TBD
+}
+
+message CortexTrajectoryReference {
+  // Stub - fields not yet extracted
+}
+
+message CortexStepGeneratorMetadata {
+  // Stub - fields not yet extracted
+}
+
+message CortexTrajectoryMetadata {
+  // Stub - fields not yet extracted
+}
+
+// ============================================================================
+// Executor / Run State
+// ============================================================================
+
+message ExecutorMetadata {
+  ExecutorTerminationReason termination_reason = 1;
+  int32 num_generator_invocations = 2;
+  int32 last_step_idx = 3;
+  bool proceeded_with_auto_continue = 4;
+  int32 num_forced_invocations = 5;
+  repeated ContextWindowMetadata segment_records = 6;
+  repeated ContextWindowMetadata trajectory_records = 7;
+}
+
+message ContextWindowMetadata {
+  // Stub - used by ExecutorMetadata
+}
+
+message CortexRunState {
+  CortexWorkflowState workflow_state = 1;
+  ActionState execution_state = 2;
+  bool done = 3;
+}
+
+message CortexWorkflowState {
+  CortexRequestSource request_source = 6;
+  string goal = 1;
+  PlanInput plan_input = 2;
+  CortexResearchState research_state = 3;
+  CortexPlanState plan_state = 4;
+  string error = 5;
+}
+
+message CortexResearchState {
+  uint32 total_retrieved_count = 1;
+  repeated ContextItem top_retrieved_items = 2;
+  ResearchDebugInfo debug_info = 3;
+  repeated ContextItem full_cci_list = 4;
+}
+
+message ResearchDebugInfo {
+  string query = 1;
+  repeated string files_scanned = 2;
+}
+
+message ContextItem {
+  // Stub - context/scope items
+}
+
+message CortexPlanState {
+  repeated CortexStepState steps = 1;
+  repeated CortexStepOutline outlines = 2;
+  uint32 current_step_index = 3;
+  PlanDebugInfo debug_info = 4;
+}
+
+message CortexStepState {
+  oneof step {
+    CodingStepState coding = 1;
+  }
+}
+
+message CortexStepOutline {
+  uint32 step_number = 1;
+  string action_name = 2;
+  string json_args = 3;
+  repeated uint32 parent_step_numbers = 4;
+}
+
+message CodingStepState {
+  // Stub - fields not yet extracted
+}
+
+message PlanDebugInfo {
+  // Stub - fields not yet extracted
+}
+
+message ActionState {
+  // Stub - execution state details
+}
+
+// ============================================================================
+// PlanInput
+// ============================================================================
+
+message PlanInput {
+  string goal = 1;
+  repeated string next_steps = 5;
+  repeated string target_directories = 2;
+  repeated string target_files = 3;
+  repeated ScopeItem scope_items = 4;
+}
+
+message ScopeItem {
+  // Stub - scope item for context
+}
+
+// ============================================================================
+// ActionSpec
+// ============================================================================
+
+message ActionSpec {
+  oneof spec {
+    ActionSpecCommand command = 1;
+    ActionSpecCreateFile create_file = 2;
+    ActionSpecDeleteFile delete_file = 4;
+  }
+  repeated uint32 parent_step_indices = 3;
+}
+
+message ActionSpecCommand {
+  // Stub - command spec details
+}
+
+message ActionSpecCreateFile {
+  // Stub - create file spec
+}
+
+message ActionSpecDeleteFile {
+  // Stub - delete file spec
+}
+
+// ============================================================================
+// Cascade Configuration
+// ============================================================================
+
+message CascadeConfig {
+  CascadePlannerConfig planner_config = 1;
+  CheckpointConfig checkpoint_config = 2;
+  CascadeExecutorConfig executor_config = 3;
+  TrajectoryConversionConfig trajectory_conversion_config = 4;
+  optional bool apply_model_default_override = 6;
+  ConversationHistoryConfig conversation_history_config = 7;
+  optional bool split_dynamic_prompt_sections = 8;
+}
+
+message CascadePlannerConfig {
+  oneof planner_type_config {
+    CascadeConversationalPlannerConfig conversational = 2;
+    CascadeConversationalPlannerConfig google = 26;
+    CascadeConversationalPlannerConfig cider = 36;
+    CustomAgentConfig custom_agent = 39;
+    string custom_agent_config_absolute_uri = 40;
+  }
+  CustomizationConfig customization_config = 42;
+  PromptSectionCustomizationConfig prompt_section_customization_config = 41;
+  CascadeToolConfig tool_config = 13;
+  StepStringConverterConfig step_string_converter_config = 31;
+  exa.codeium_common_pb.ModelId plan_model = 1;
+  exa.codeium_common_pb.RequestedModel requested_model = 15;
+  string model_name = 28;
+  exa.codeium_common_pb.ModelInfo custom_model_info_override = 27;
+  uint32 max_output_tokens = 6;
+  optional bool no_tool_explanation = 7;
+  optional bool no_tool_summary = 33;
+  int32 truncation_threshold_tokens = 14;
+  EphemeralMessagesConfig ephemeral_messages_config = 21;
+  bool show_all_errors = 25;
+  ModelOutputRetryConfig retry_config = 30;
+  KnowledgeConfig knowledge_config = 32;
+  AgenticModeConfig agentic_mode_config = 35;
+  optional bool no_wait_for_previous_tools = 37;
+}
+
+message CascadeConversationalPlannerConfig {
+  PlannerMode planner_mode = 4;
+  optional bool eval_mode = 5;
+  optional bool agentic_mode = 14;
+  optional string prompt_combination_name = 15;
+  ConversationHistoryConfig conversation_history_config = 16;
+  optional string override_workspace_dir_experimental_use_only = 17;
+}
+
+enum PlannerMode {
+  PLANNER_MODE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+message CascadeExecutorConfig {
+  optional bool disable_async = 1;
+  int32 max_generator_invocations = 2;
+  repeated CortexStepType terminal_step_types = 3;
+  optional bool hold_for_valid_checkpoint = 5;
+  int32 hold_for_valid_checkpoint_timeout = 6;
+  bool research_only = 7;
+  optional bool use_aggressive_snapshotting = 8;
+  optional bool require_finish_tool = 9;
+  optional int32 max_forced_invocations = 10;
+  optional bool queue_all_steps = 11;
+}
+
+message CheckpointConfig {
+  // Stub - checkpoint configuration
+}
+
+message TrajectoryConversionConfig {
+  optional bool group_tools_with_planner_response = 3;
+  optional bool wrap_tool_responses = 5;
+  LogArtifactsConfig log_artifacts_config = 6;
+  optional bool append_ephemeral_to_previous_tool_result = 7;
+  optional bool disable_step_id = 8;
+  optional bool use_raw_user_message = 9;
+}
+
+message LogArtifactsConfig {
+  optional bool enabled = 1;
+  optional bool hide_nominal_tool_steps = 2;
+  optional bool hide_planner_response_text = 3;
+  int32 max_bytes_per_step = 4;
+  int32 max_bytes_per_tool_arg = 5;
+}
+
+message ConversationHistoryConfig {
+  // Stub - conversation history settings
+}
+
+// ============================================================================
+// CortexConfig (top-level cortex configuration)
+// ============================================================================
+
+message CortexConfig {
+  bool record_telemetry = 11;
+  bool add_distill_node = 6;
+  ModelConfig distill_config = 10;
+  MQueryConfig m_query_config = 8;
+  string m_query_model_name = 12;
+  bool use_macro_planner = 1;
+  ModelConfig macro_plan_config = 4;
+  PlanConfig plan_config = 9;
+  ModelConfig code_plan_config = 5;
+  bool auto_prepare_apply = 2;
+  uint32 num_prepare_retries = 3;
+}
+
+message PlanConfig {
+  string plan_model_name = 1;
+  uint32 max_tokens_per_plan = 2;
+  float max_token_fraction = 3;
+  float chat_temperature = 4;
+  uint64 chat_completion_max_tokens = 5;
+  bool augment_command = 9;
+  ExperimentConfig experiment_config = 7;
+  MQueryConfig m_query_config = 8;
+}
+
+message ModelConfig {
+  // Stub - generic model configuration
+}
+
+message MQueryConfig {
+  // Stub - MQuery configuration
+}
+
+message ExperimentConfig {
+  // Stub - experiment configuration
+}
+
+// ============================================================================
+// Cascade Panel State
+// ============================================================================
+
+message CascadePanelState {
+  // Stub - panel state for UI
+}
+
+// ============================================================================
+// Key Step Type Definitions (extracted fields)
+// ============================================================================
+
+message CortexStepRunCommand {
+  string command_line = 23;
+  string proposed_command_line = 25;
+  string cwd = 2;
+  uint64 wait_ms_before_async = 12;
+  bool should_auto_run = 15;
+  string requested_terminal_id = 17;
+  bool sandbox_override = 27;
+  bool blocking = 11;
+  string command_id = 13;
+  optional int32 exit_code = 6;
+  bool user_rejected = 14;
+  AutoRunDecision auto_run_decision = 16;
+  string terminal_id = 18;
+  RunCommandOutput combined_output = 21;
+  RunCommandOutput combined_output_snapshot = 26;
+  bool used_ide_terminal = 22;
+  string raw_debug_output = 24;
+  string command = 1;           // deprecated: use command_line
+  repeated string args = 3;     // deprecated: use command_line
+  string stdout = 4;
+  string stderr = 5;
+  string stdout_buffer = 7;
+  string stderr_buffer = 8;
+  uint32 stdout_lines_above = 9;
+  uint32 stderr_lines_above = 10;
+  RunCommandOutput stdout_output = 19;
+  RunCommandOutput stderr_output = 20;
+}
+
+message RunCommandOutput {
+  // Stub - structured command output
+}
+
+message CortexStepFileChange {
+  string absolute_path_uri = 1;
+  FileChangeType file_change_type = 2;
+  repeated ReplacementChunk replacement_chunks = 3;
+  string instruction = 5;
+  FileDiff diff = 4;
+  repeated ReplacementChunkInfo replacement_infos = 6;
+  FastApplyFallbackInfo fast_apply_fallback_info = 7;
+  bool overwrite = 8;
+}
+
+message ReplacementChunk {
+  // Stub - code replacement chunk
+}
+
+message ReplacementChunkInfo {
+  // Stub - replacement metadata
+}
+
+message FileDiff {
+  // Stub - file diff content
+}
+
+message FastApplyFallbackInfo {
+  // Stub - fast apply fallback info
+}
+
+message CortexStepViewFile {
+  string absolute_path_uri = 1;
+  uint32 start_line = 2;
+  uint32 end_line = 3;
+  string content = 4;
+  string raw_content = 9;
+  exa.chat_pb.Image binary_data = 14;
+  Media media_data = 15;
+  string triggered_memories = 10;
+  uint32 num_lines = 11;
+  uint32 num_bytes = 12;
+  bool is_injected_reminder = 13;
+  FilePermissionInteraction file_permission_request = 16;
+}
+
+message FilePermissionInteraction {
+  // Stub - file permission request
+}
+
+message Media {
+  // Stub - media content
+}
+
+message CortexStepMcpTool {
+  string server_name = 1;
+  exa.chat_pb.ToolCall tool_call = 2;
+  McpServerInfo server_info = 4;
+  oneof result {
+    string result_string = 3;
+    string result_uri = 8;
+  }
+  repeated exa.chat_pb.Image images = 5;
+  repeated Media media = 6;
+  bool user_rejected = 7;
+  StepRenderInfo render_info = 9;
+}
+
+message McpServerInfo {
+  // Stub - MCP server information
+}
+
+message StepRenderInfo {
+  string title = 1;
+  string markdown = 2;
+  map<string, string> metadata = 3;
+}
+
+message CortexStepMove {
+  string src_absolute_path_uri = 1;
+  string dst_absolute_path_uri = 2;
+}
+
+message CortexStepEphemeralMessage {
+  string content = 1;
+  repeated Media media = 2;
+  repeated string triggered_heuristics = 3;
+  repeated Media attachments = 4;
+}
+
+message CortexStepClipboard {
+  string content = 1;
+}
+
+message CortexStepReadUrlContent {
+  string url = 1;
+  // web_document field (message type)
+  string resolved_url = 3;  // field no TBD
+  // latency_ms, user_rejected fields
+}
+
+message CortexStepLintDiff {
+  LintDiffType type = 1;
+  Diagnostic lint = 2;
+}
+
+message Diagnostic {
+  // Stub - lint/diagnostic info
+}
+
+message ListDirectoryResult {
+  string name = 1;
+  bool is_dir = 2;
+  optional uint32 num_children = 3;
+  uint64 size_bytes = 4;
+}
+
+message CortexStepListDirectory {
+  string directory_path_uri = 1;
+  repeated ListDirectoryResult children = 2;
+  // result fields
+}
+
+message McpResource {
+  string uri = 1;
+  string name = 2;
+  string description = 3;
+  string mime_type = 4;
+}
+
+message FileAccessPermission {
+  string path = 1;
+  bool is_directory = 2;
+  bool allow = 3;
+  PermissionScope scope = 4;
+  bool from_current_step = 5;
+}
+
+// ============================================================================
+// Stub Step Types (fields not yet extracted)
+// ============================================================================
+
+message CortexStepGeneric {}
+message CortexStepFinish {}
+message CortexStepMquery {}
+message CortexStepCodeAction {}
+message CortexStepGitCommit {}
+message CortexStepGrepSearch {}
+message CortexStepCompile {}
+message CortexStepViewCodeItem {}
+message CortexStepErrorMessage {}
+message CortexStepFind {}
+message CortexStepSuggestedResponses {}
+message CortexStepCommandStatus {}
+message CortexStepViewContentChunk {}
+message CortexStepSearchWeb {}
+message CortexStepViewFileOutline {}
+message CortexStepListResources {}
+message CortexStepReadResource {}
+message CortexStepOpenBrowserUrl {}
+message CortexStepRunExtensionCode {}
+message CortexStepTrajectorySearch {}
+message CortexStepExecuteBrowserJavaScript {}
+message CortexStepListBrowserPages {}
+message CortexStepCaptureBrowserScreenshot {}
+message CortexStepClickBrowserPixel {}
+message CortexStepReadTerminal {}
+message CortexStepCaptureBrowserConsoleLogs {}
+message CortexStepReadBrowserPage {}
+message CortexStepBrowserGetDom {}
+message CortexStepCodeSearch {}
+message CortexStepBrowserInput {}
+message CortexStepBrowserMoveMouse {}
+message CortexStepBrowserSelectOption {}
+message CortexStepBrowserScrollUp {}
+message CortexStepBrowserScrollDown {}
+message CortexStepBrowserClickElement {}
+message CortexStepBrowserListNetworkRequests {}
+message CortexStepBrowserGetNetworkRequest {}
+message CortexStepBrowserPressKey {}
+message CortexStepTaskBoundary {}
+message CortexStepNotifyUser {}
+message CortexStepCodeAcknowledgement {}
+message CortexStepInternalSearch {}
+message CortexStepBrowserSubagent {}
+message CortexStepKnowledgeGeneration {}
+message CortexStepGenerateImage {}
+message CortexStepBrowserScroll {}
+message CortexStepBrowserResizeWindow {}
+message CortexStepBrowserDragPixelToPixel {}
+message CortexStepBrowserMouseWheel {}
+message CortexStepBrowserMouseUp {}
+message CortexStepBrowserMouseDown {}
+message CortexStepBrowserRefreshPage {}
+message CortexStepConversationHistory {}
+message CortexStepKnowledgeArtifacts {}
+message CortexStepSendCommandInput {}
+message CortexStepSystemMessage {}
+message CortexStepWait {}
+message CortexStepKIInsertion {}
+message CortexStepWorkspaceAPI {}
+message CortexStepCompileApplet {}
+message CortexStepInstallAppletDependencies {}
+message CortexStepInstallAppletPackage {}
+message CortexStepSetUpFirebase {}
+message CortexStepRestartDevServer {}
+message CortexStepDeployFirebase {}
+message CortexStepLintApplet {}
+message CortexStepShellExec {}
+message CortexStepDefineNewEnvVariable {}
+message CortexStepAgencyToolCall {}
+message CortexStepUserInput {}
+message CortexStepPlannerResponse {}
+message CortexStepDeleteDirectory {}
+message CortexStepCheckpoint {}
+message CortexStepDummy {}
+message CortexStepPlanInput {}
+message CortexStepFileBreakdown {}
+message CortexStepWriteToFile {}
+message CortexStepProposeCode {}
+message CortexStepSearchKnowledgeBase {}
+message CortexStepLookupKnowledgeBase {}
+message CortexStepManagerFeedback {}
+message CortexStepToolCallProposal {}
+message CortexStepToolCallChoice {}
+message CortexStepTrajectoryChoice {}
+message CortexStepCheckDeployStatus {}
+message CortexStepPostPrReview {}
+message CortexStepFindAllReferences {}
+message CortexStepBrainUpdate {}
+message CortexStepAddAnnotation {}
+message CortexStepProposalFeedback {}
+message CortexStepRetrieveMemory {}
+message CortexStepMemory {}
+message CortexStepArtifactSummary {}
+
+// Additional config stubs
+message RequestedInteraction {}
+message UserStepAnnotations {}
+message CascadeToolConfig {}
+message StepStringConverterConfig {}
+message CustomAgentConfig {}
+message CustomizationConfig {}
+message PromptSectionCustomizationConfig {}
+message EphemeralMessagesConfig {}
+message ModelOutputRetryConfig {}
+message KnowledgeConfig {}
+message AgenticModeConfig {}
+message ArtifactSnapshot {}
+message BrainUpdateStrategy {}

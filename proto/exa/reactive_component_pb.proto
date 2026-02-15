@@ -1,0 +1,120 @@
+// Reconstructed from Antigravity app bundle (jetskiAgent/main.js)
+// Package: exa.reactive_component_pb
+// Reactive streaming infrastructure for differential state updates.
+
+syntax = "proto3";
+
+package exa.reactive_component_pb;
+
+// ============================================================================
+// Streaming Request/Response
+// ============================================================================
+
+message StreamReactiveUpdatesRequest {
+  uint32 protocol_version = 1;
+  string id = 2;
+  string subscriber_id = 3;
+}
+
+message StreamReactiveUpdatesResponse {
+  uint64 version = 1;
+  MessageDiff diff = 2;
+}
+
+// ============================================================================
+// Diff Types
+// ============================================================================
+
+// Top-level diff for a protobuf message. Contains diffs for individual fields.
+message MessageDiff {
+  repeated FieldDiff field_diffs = 1;
+}
+
+// Diff for a single field, identified by field number.
+message FieldDiff {
+  uint32 field_number = 1;
+
+  oneof diff {
+    SingularValue update_singular = 2;
+    RepeatedDiff update_repeated = 3;
+    MapDiff update_map = 4;
+    bool clear = 5;
+  }
+}
+
+// Represents a singular (scalar, enum, or message) value.
+message SingularValue {
+  oneof value {
+    double double_value = 1;
+    float float_value = 2;
+    int32 int32_value = 3;
+    int64 int64_value = 4;
+    uint32 uint32_value = 5;
+    uint64 uint64_value = 6;
+    sint32 sint32_value = 7;
+    sint64 sint64_value = 8;
+    fixed32 fixed32_value = 9;
+    fixed64 fixed64_value = 10;
+    sfixed32 sfixed32_value = 11;
+    sfixed64 sfixed64_value = 12;
+    bool bool_value = 13;
+    uint32 enum_value = 14;       // Enums stored as uint32
+    string string_value = 15;
+    bytes bytes_value = 16;
+    MessageDiff message_value = 17;
+  }
+}
+
+// Diff for a repeated field. Provides new length and sparse updates.
+message RepeatedDiff {
+  uint32 new_length = 1;
+  repeated SingularValue update_values = 2;
+  repeated uint32 update_indices = 3;
+}
+
+// Diff for a map field.
+message MapDiff {
+  repeated MapKeyDiff map_key_diffs = 1;
+}
+
+// Diff for a single map entry, keyed by map key.
+message MapKeyDiff {
+  SingularValue map_key = 1;
+
+  oneof diff {
+    SingularValue update_singular = 2;
+    bool clear = 3;
+  }
+}
+
+// ============================================================================
+// Test Types (used internally for validation)
+// ============================================================================
+
+enum TestDiffEnum {
+  TEST_DIFF_ENUM_UNSPECIFIED = 0;
+}
+
+message TestProto {
+  int32 counter = 1;
+  repeated int32 values = 2;
+  TestProto nested = 3;
+  repeated TestProto nested_repeated = 4;
+}
+
+message TestDiffProto {
+  double singular_scalar_value = 1;
+  TestProto singular_message_value = 2;
+  optional double optional_scalar_value = 10;
+  repeated double repeated_scalar_value = 3;
+  repeated TestProto repeated_message_value = 4;
+  map<int32, double> map_scalar_value = 5;
+  map<string, TestProto> map_message_value = 6;
+
+  oneof oneof_test {
+    double oneof_scalar_value = 7;
+    TestProto oneof_message_value = 8;
+  }
+
+  TestDiffEnum enum_value = 9;
+}

@@ -1,0 +1,60 @@
+// Reconstructed from Antigravity app bundle (jetskiAgent/main.js)
+// Package: exa.chat_client_server_pb
+// Chat client-server streaming protocol types.
+
+syntax = "proto3";
+
+package exa.chat_client_server_pb;
+
+import "exa/codeium_common_pb.proto";
+import "exa/chat_pb.proto";
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum ChatClientRequestStreamClientType {
+  CHAT_CLIENT_REQUEST_STREAM_CLIENT_TYPE_UNSPECIFIED = 0;
+  CHAT_CLIENT_REQUEST_STREAM_CLIENT_TYPE_IDE = 1;
+  CHAT_CLIENT_REQUEST_STREAM_CLIENT_TYPE_BROWSER = 2;
+}
+
+// ============================================================================
+// Messages
+// ============================================================================
+
+// Request to start a chat client request stream.
+message StartChatClientRequestStreamRequest {
+  ChatClientRequestStreamClientType client_type = 1;
+}
+
+// Multiplexed chat client request (bidirectional streaming).
+message ChatClientRequest {
+  oneof request {
+    AddCascadeInputRequest add_cascade_input = 1;
+    SendActionToChatPanelRequest send_action_to_chat_panel = 2;
+    InitialAckRequest initial_ack = 3;
+    RefreshCustomizationRequest refresh_customization = 4;
+  }
+}
+
+// Add input items to a Cascade conversation.
+message AddCascadeInputRequest {
+  repeated exa.codeium_common_pb.TextOrScopeItem items = 1;
+  repeated exa.chat_pb.Image images = 2;
+  repeated exa.codeium_common_pb.Media media = 3;
+}
+
+// Send an action to the chat panel UI.
+message SendActionToChatPanelRequest {
+  string action_type = 1;
+  repeated bytes payload = 2;
+}
+
+// Initial acknowledgement (no fields).
+message InitialAckRequest {}
+
+// Request to refresh customization configuration.
+message RefreshCustomizationRequest {
+  exa.codeium_common_pb.RefreshCustomizationType config_type = 1;
+}

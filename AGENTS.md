@@ -257,7 +257,7 @@ return create_error_response("Not found", status_code=404)
    systemctl --user restart gcli2api
    ```
 
-7. **Search Tool Stripping**: On Antigravity, `web_search`/`google_search` tools are auto-stripped for models other than `gemini-2.5-flash` (in `src/router/antigravity/anthropic.py`). This prevents 503 MODEL_CAPACITY_EXHAUSTED hangs. For Claude models, search is intercepted earlier by `web_search_handler.py`.
+7. **Search Handling on Antigravity**: `gemini-2.5-flash` supports native search. For `gemini-3*`, behavior is client-aware in `src/router/antigravity/anthropic.py`: OpenCode user agents (`opencode/...`) have `web_search` stripped to keep Antigravity routing stable, while non-OpenCode clients are rerouted to GeminiCLI Anthropic route where search works. Claude models are intercepted earlier by `web_search_handler.py`.
 
 ## Debugging Guide
 
@@ -382,7 +382,9 @@ gcli2api provides web search capability via Gemini's native `googleSearch` groun
 | Model | Search | Notes |
 |-------|--------|-------|
 | `gemini-2.5-flash` | ✓ | Only model with googleSearch support |
-| Other Gemini models | auto-stripped | Search tools silently removed to prevent 503/hangs |
+| `gemini-3*` + OpenCode UA | stripped | Keep Antigravity path; remove `web_search` to avoid unsupported hangs/503 |
+| `gemini-3*` + non-OpenCode UA | rerouted | Forward to GeminiCLI Anthropic route for working search |
+| Other Gemini models | auto-stripped | Search tools removed if unsupported |
 | Claude models | intercepted | Handled by `web_search_handler.py` (separate Gemini call) |
 
 ### How to Enable Search
@@ -442,7 +444,7 @@ curl -s -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-flash:generateConten
 |----------|--------|---------------|
 | `/v1/chat/completions` | OpenAI | `-search` suffix ✓ |
 | `/v1/messages` | Anthropic | `web_search` tool ✓ |
-| `/antigravity/v1/messages` | Anthropic | `web_search` tool ✓ (gemini-2.5-flash only) |
+| `/antigravity/v1/messages` | Anthropic | Native on `gemini-2.5-flash`; `gemini-3*` OpenCode strips search, others reroute to GeminiCLI |
 | `/antigravity/v1/chat/completions` | OpenAI | ✗ Not supported |
 
 ### Getting Citations
@@ -522,3 +524,121 @@ curl -s -X POST http://localhost:3100/mcp \
 - `THINKING_BUDGET`: Thinking tokens (0=off, 1024-32000)
 
 **Note**: The MCP server forces `gemini-3-flash` if any `2.5` model is specified. This is intentional to deprecate older models.
+
+## Antigravity Porting Decision Log
+
+Auditable record of every design decision made when building the Antigravity proxy. Each entry documents what was decided, why, where in the code, and whether it's a REPLICATION of real client behavior, a WORKAROUND for an API quirk, or a CUSTOM enhancement.
+
+### Headers
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Dynamic UA version via updater API (`/api/update/{plat}/stable/0.0.1`), parses `productVersion` from JSON response. Fallback `1.107.0` | REPLICATION | `src/utils.py:19-89` | Old code hit bare root URL and got server version (`1.16.5`) instead of client version (`1.107.0`). Fixed 2026-02-15. |
+| Arch uses Electron-style names: `x64`, `arm64` (not `x86_64`) | REPLICATION | `src/utils.py:85-93` | Real client sends `linux/x64`. Old code sent `linux/x86_64`. Fixed 2026-02-15. |
+| GeminiCLI UA: `GeminiCLI/0.1.5 (Windows; AMD64)` | REPLICATION | `src/utils.py:17` | Mimics official CLI. Static, not dynamically versioned. |
+| `requestType: agent` (or `image_gen` for image models) | REPLICATION | `src/api/antigravity.py:241-249` | Required by upstream routing |
+| `requestId: req-<uuid4>` on every request | REPLICATION | `src/api/antigravity.py:238` | Tracing ID |
+| **GeminiCLI must NOT send `requestType`/`requestId`** | WORKAROUND | Tested in scripts/ | GeminiCLI tokens get 403 with Antigravity-style headers |
+
+### Payload / Request Format
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Strip all `cache_control` fields from content blocks | WORKAROUND | `src/converter/anthropic2gemini.py:111-171` | Claude Code sends them; Cloud Code API rejects "Extra inputs" |
+| Inject placeholder property into empty `type: object` schemas | WORKAROUND | `src/converter/anthropic2gemini.py:570-603` | Gemini rejects empty schemas. Fixes Notion MCP. Same approach as Antigravity-Manager |
+| Force `maxOutputTokens: 64000` | CUSTOM | `src/converter/gemini_fix.py:418-419` | Prevent truncation from client limits |
+| Force `topK: 64` | CUSTOM | `src/converter/gemini_fix.py:420-421` | Clamped to known-working value |
+| Flatten `$ref`/`$defs`, merge `anyOf`/`oneOf` in tool schemas | WORKAROUND | `src/converter/anthropic2gemini.py:606+` | Gemini doesn't support JSON Schema references |
+| Antigravity payload wrapped as `{model, project, request}` | REPLICATION | `src/api/antigravity.py:356-360` | v1internal envelope format |
+| System instruction preamble injection for Antigravity | REPLICATION | `src/converter/gemini_fix.py:267-279` | Agent persona expected by backend |
+| Interleaved thinking hint for Claude MCP scenarios | REPLICATION | `src/converter/gemini_fix.py:335-344` | Ported from `antigravity-claude-proxy` |
+| Claude uses snake_case `thinkingConfig` fields | REPLICATION | `src/converter/gemini_fix.py:293-309` | Antigravity backend expects different casing per model family |
+| All 10 safety categories set to `BLOCK_NONE` | CUSTOM | `src/utils.py:219-229` | Prevent false-positive filtering for developer/agent use |
+
+### Thinking Budget / Effort
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Clamp `budget_tokens` minimum to 1024 | WORKAROUND | `src/converter/anthropic2gemini.py:1256-1261` | Gemini API hard minimum |
+| Map Claude `adaptive` thinking → fixed 32000 tokens | WORKAROUND | `src/converter/anthropic2gemini.py:1266-1268` | Antigravity has no true adaptive mode |
+| Map `effortLevel` (LOW/MEDIUM/HIGH) → `thinkingBudget` (4096/16384/32000) | WORKAROUND | `src/api/antigravity.py:362-384` | Antigravity rejects `effortLevel` with 400; emulate via budget. HIGH=32000 matches Claude Code's default (31999 rounded). |
+
+### Thinking / Signature Handling
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Encode `thoughtSignature` into tool IDs via `__thought__` separator | REPLICATION | `src/converter/thoughtSignature_fix.py:50-94` | Only way to survive client round-trips. Ported from `antigravity-claude-proxy` |
+| Placeholder `skip_thought_signature_validator` when upstream returns no sig | WORKAROUND | `src/converter/anthropic2gemini.py:1054` | Claude on Antigravity never returns signatures (upstream limitation) |
+| Signature cache with 30min TTL + session tracking (2hr TTL) | REPLICATION | `src/converter/thoughtSignature_fix.py:22-28` | Handles message edit/retry. Ported from Rust impl |
+| Skip thinking recovery when using placeholder signatures | WORKAROUND | `src/converter/thinking_recovery.py:548-557` | Injecting `[Continue]` with fake sigs causes repetitive tool calls |
+| Strip cross-model signatures on model family switch | CUSTOM | `src/converter/thoughtSignature_fix.py:31-47` | Claude sigs invalid for Gemini and vice versa |
+| Inject `[Tool call was interrupted.]` on interrupted tool calls | CUSTOM | `src/converter/thinking_recovery.py:543-546` | Close invalid tool loops |
+
+### Error Handling / Retry
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Multi-endpoint fallback: Sandbox → Daily → Prod | REPLICATION | `config.py:727-748`, `src/api/antigravity.py:88-151` | Matches Antigravity-Manager's `should_try_next_endpoint` |
+| Classify 429 into QUOTA_EXHAUSTED vs MODEL_CAPACITY_EXHAUSTED | CUSTOM | `src/api/retry_strategy.py:160-214` | Rotate account on quota; keep account on capacity |
+| Progressive backoff: quota=[60s,5m,30m,2h], capacity=[5s-60s] | CUSTOM | `src/api/retry_strategy.py` | Different error types need different strategies |
+| Rotate credential on 401/403 auth errors | CUSTOM | `src/api/retry_strategy.py` | Credential-specific problem |
+| Model-level cooldowns (not global) | CUSTOM | `src/credential_manager.py` | Quota is per-model per-account |
+
+### Web Search Routing
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Map `web_search_20250305` → Gemini `googleSearch` | CUSTOM | `src/converter/anthropic2gemini.py:826-862` | Translate Anthropic tool format |
+| `-search` model suffix adds `googleSearch` automatically | CUSTOM | `src/converter/gemini_fix.py:248-261` | Convenience for OpenAI-format clients |
+| Antigravity: only `gemini-2.5-flash` supports native search | WORKAROUND | `src/router/antigravity/anthropic.py:348-357` | Other models hang or 503 with googleSearch |
+| Gemini-3 + OpenCode UA: strip `web_search` silently | WORKAROUND | `src/router/antigravity/anthropic.py:317-325` | Keep OpenCode on Antigravity path |
+| Gemini-3 + non-OpenCode UA: reroute to GeminiCLI | WORKAROUND | `src/router/antigravity/anthropic.py:308-346` | Search works on GeminiCLI endpoint |
+| Claude + `web_search`: intercept, use Gemini as search executor | WORKAROUND | `src/router/antigravity/anthropic.py:286-295` | Claude on Antigravity can't do googleSearch |
+
+### Credential / Auth
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Same OAuth Client IDs as official clients | REPLICATION | `src/utils.py:92-93` | Required for valid tokens |
+| Default endpoint: `daily-cloudcode-pa.sandbox.googleapis.com` | REPLICATION | `config.py:716,730` | Least restrictive endpoint |
+
+### Transport (HTTP/2)
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| **HTTP/2 enabled** for all outbound requests | REPLICATION | `src/httpx_client.py:54` | Matches real Antigravity (ConnectRPC/HTTP/2) and GeminiCLI behavior. `h2` library was already installed via Hypercorn. |
+
+**HTTP/2 Analysis:**
+
+Real clients use HTTP/2. Antigravity uses ConnectRPC (gRPC-web over HTTP/2) per `docs/antigravity-protocol.md`. GeminiCLI also negotiates HTTP/2 via ALPN.
+
+Why we enabled it:
+- Real clients always use HTTP/2. HTTP/1.1 + Antigravity UA was a fingerprinting mismatch (ALPN visible server-side).
+- Zero migration risk. `h2` library already installed (transitive dep of Hypercorn). One-line change. httpx streaming works identically over HTTP/2.
+- Under concurrent load, HTTP/2 multiplexes many requests over fewer TCP connections — better than HTTP/1.1 connection-per-request.
+
+### Investigated But Abandoned
+
+| Investigation | Outcome | Reason |
+|---------------|---------|--------|
+| **Dual Client ID strategy** (GeminiCLI + Antigravity OAuth for 2x quota) | ABANDONED | Cannot test without exhausted account. `fetchAvailableModels` quota API always reports 100% — too coarse to detect per-request changes. |
+| **Proactive quota routing** (call `fetchAvailableModels` before routing) | NOT USEFUL | Quota API reports 1.0 even when partially consumed. Already track exhaustion reactively via 429s. |
+
+### Image Token Estimation
+
+| Decision | Type | Location | Notes |
+|----------|------|----------|-------|
+| Dimension-based image token estimation (crop-unit tiling formula) | REPLICATION | `src/token_estimator.py:70-143` | Implements Google's documented formula: `crop_unit = clamp(floor(min(w,h)/1.5), 256, 768)`, tiles = `ceil(w/cu) * ceil(h/cu)`, tokens = `tiles * 258`. Replaces flat 300 tokens/image. |
+| Extract image dimensions from base64 headers (PNG, JPEG, GIF, WebP) | CUSTOM | `src/token_estimator.py:82-139` | Decodes only first ~4KB of base64 to read binary headers. Zero external dependencies (no PIL/Pillow). |
+| Hybrid native+image token counting | CUSTOM | `src/token_estimator.py:count_tokens_native()` | For image payloads: strip images → native countTokens for text → add dimension-based image estimate. Previously skipped native counting entirely when images present. |
+| Size-based fallback for unknown image formats | CUSTOM | `src/token_estimator.py:_estimate_tokens_from_data_size()` | When dimensions can't be parsed: <50KB→258, 50-500KB→1548, 500KB-2MB→2064, >2MB→3870 tokens. Conservative overcount preferred. |
+
+**Impact (3x 1080p video frames):**
+- Old estimate: 300 tokens/image × 3 = 900 tokens
+- New estimate: 1548 tokens/image × 3 = 4644 tokens (5.2x more accurate)
+- This means Claude Code's context compaction triggers much earlier, preventing sudden "Context limit reached" errors.
+
+**Image support confirmed:**
+- Claude Opus 4.6 on Antigravity: `supports_images = true` (tested 2026-02-15, responded correctly to image input)
+- Claude Opus 4.5: deprecated, redirects to 4.6
+

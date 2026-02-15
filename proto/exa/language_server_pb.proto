@@ -1,0 +1,1232 @@
+// Reconstructed from Antigravity app bundle (jetskiAgent/main.js)
+// Package: exa.language_server_pb
+// LanguageServerService: The main ConnectRPC service for the Jetski agent.
+// Contains ~120 methods for Cascade, completions, settings, browser, etc.
+
+syntax = "proto3";
+
+package exa.language_server_pb;
+
+import "exa/cortex_pb.proto";
+import "exa/jetski_cortex_pb.proto";
+import "exa/reactive_component_pb.proto";
+import "exa/chat_pb.proto";
+import "exa/codeium_common_pb.proto";
+import "exa/chat_client_server_pb.proto";
+
+// ============================================================================
+// Service Definition
+// ============================================================================
+
+service LanguageServerService {
+  // --- Completions ---
+  rpc ProvideCompletionFeedback(ProvideCompletionFeedbackRequest) returns (ProvideCompletionFeedbackResponse);
+  rpc HandleStreamingCommand(HandleStreamingCommandRequest) returns (stream HandleStreamingCommandResponse);
+
+  // --- System ---
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc Exit(ExitRequest) returns (ExitResponse);
+  rpc SimulateSegFault(SimulateSegFaultRequest) returns (SimulateSegFaultResponse);
+  rpc GetDebugDiagnostics(GetDebugDiagnosticsRequest) returns (GetDebugDiagnosticsResponse);
+  rpc DumpFlightRecorder(DumpFlightRecorderRequest) returns (DumpFlightRecorderResponse);
+  rpc DumpPprof(DumpPprofRequest) returns (DumpPprofResponse);
+
+  // --- Configuration ---
+  rpc GetCommandModelConfigs(GetCommandModelConfigsRequest) returns (GetCommandModelConfigsResponse);
+  rpc GetCascadeModelConfigs(GetCascadeModelConfigsRequest) returns (GetCascadeModelConfigsResponse);
+  rpc GetCascadeModelConfigData(GetCascadeModelConfigDataRequest) returns (exa.codeium_common_pb.CascadeModelConfigData);
+  rpc GetUserSettings(GetUserSettingsRequest) returns (GetUserSettingsResponse);
+  rpc SetUserSettings(SetUserSettingsRequest) returns (SetUserSettingsResponse);
+  rpc GetTeamOrganizationalControls(GetTeamOrganizationalControlsRequest) returns (GetTeamOrganizationalControlsResponse);
+  rpc GetModelStatuses(GetModelStatusesRequest) returns (GetModelStatusesResponse);
+
+  // --- Events / Telemetry ---
+  rpc RecordEvent(RecordEventRequest) returns (RecordEventResponse);
+  rpc RecordSearchDocOpen(RecordSearchDocOpenRequest) returns (RecordSearchDocOpenResponse);
+  rpc RecordSearchResultsView(RecordSearchResultsViewRequest) returns (RecordSearchResultsViewResponse);
+  rpc RecordChatFeedback(RecordChatFeedbackRequest) returns (RecordChatFeedbackResponse);
+  rpc RecordChatPanelSession(RecordChatPanelSessionRequest) returns (RecordChatPanelSessionResponse);
+  rpc RecordCommitMessageSave(RecordCommitMessageSaveRequest) returns (RecordCommitMessageSaveResponse);
+  rpc RecordUserStepSnapshot(RecordUserStepSnapshotRequest) returns (RecordUserStepSnapshotResponse);
+  rpc RecordInteractiveCascadeFeedback(RecordInteractiveCascadeFeedbackRequest) returns (RecordInteractiveCascadeFeedbackResponse);
+  rpc RecordLints(RecordLintsRequest) returns (RecordLintsResponse);
+  rpc RecordUserGrep(RecordUserGrepRequest) returns (RecordUserGrepResponse);
+  rpc RecordAnalyticsEvent(RecordAnalyticsEventRequest) returns (RecordAnalyticsEventResponse);
+
+  // --- User Management ---
+  rpc RegisterGdmUser(RegisterGdmUserRequest) returns (RegisterGdmUserResponse);
+  rpc MigrateApiKey(MigrateApiKeyRequest) returns (MigrateApiKeyResponse);
+  rpc GetUserStatus(GetUserStatusRequest) returns (GetUserStatusResponse);
+  rpc GetProfileData(GetProfileDataRequest) returns (GetProfileDataResponse);
+  rpc GetUserAnalyticsSummary(GetUserAnalyticsSummaryRequest) returns (GetUserAnalyticsSummaryResponse);
+  rpc GetChangelog(GetChangelogRequest) returns (GetChangelogResponse);
+  rpc ResetOnboarding(ResetOnboardingRequest) returns (ResetOnboardingResponse);
+  rpc SkipOnboarding(SkipOnboardingRequest) returns (SkipOnboardingResponse);
+  rpc GetTermsOfService(GetTermsOfServiceRequest) returns (GetTermsOfServiceResponse);
+  rpc AcceptTermsOfService(AcceptTermsOfServiceRequest) returns (AcceptTermsOfServiceResponse);
+  rpc ShouldEnableUnleash(ShouldEnableUnleashRequest) returns (ShouldEnableUnleashResponse);
+  rpc GetUnleashData(GetUnleashDataRequest) returns (GetUnleashDataResponse);
+  rpc GetStaticExperimentStatus(GetStaticExperimentStatusRequest) returns (GetStaticExperimentStatusResponse);
+  rpc GetTranscription(GetTranscriptionRequest) returns (GetTranscriptionResponse);
+
+  // --- Cascade (Core Agent) ---
+  rpc StartCascade(StartCascadeRequest) returns (StartCascadeResponse);
+  rpc SendUserCascadeMessage(SendUserCascadeMessageRequest) returns (SendUserCascadeMessageResponse);
+  rpc CancelCascadeInvocation(CancelCascadeInvocationRequest) returns (CancelCascadeInvocationResponse);
+  rpc CancelCascadeSteps(CancelCascadeStepsRequest) returns (CancelCascadeStepsResponse);
+  rpc SignalExecutableIdle(SignalExecutableIdleRequest) returns (SignalExecutableIdleResponse);
+  rpc SendAllQueuedMessages(SendAllQueuedMessagesRequest) returns (SendAllQueuedMessagesResponse);
+  rpc DeleteQueuedUserInputStep(DeleteQueuedUserInputStepRequest) returns (DeleteQueuedUserInputStepResponse);
+  rpc RevertToCascadeStep(RevertToCascadeStepRequest) returns (RevertToCascadeStepResponse);
+  rpc GetRevertPreview(GetRevertPreviewRequest) returns (GetRevertPreviewResponse);
+  rpc HandleCascadeUserInteraction(HandleCascadeUserInteractionRequest) returns (HandleCascadeUserInteractionResponse);
+  rpc AcknowledgeCascadeCodeEdit(AcknowledgeCascadeCodeEditRequest) returns (AcknowledgeCascadeCodeEditResponse);
+  rpc AcknowledgeCodeActionStep(AcknowledgeCodeActionStepRequest) returns (AcknowledgeCodeActionStepResponse);
+  rpc GetCodeValidationStates(GetCodeValidationStatesRequest) returns (GetCodeValidationStatesResponse);
+  rpc ForceBackgroundResearchRefresh(ForceBackgroundResearchRefreshRequest) returns (ForceBackgroundResearchRefreshResponse);
+  rpc ResolveOutstandingSteps(ResolveOutstandingStepsRequest) returns (ResolveOutstandingStepsResponse);
+
+  // --- Cascade State / Trajectories ---
+  rpc GetCascadeTrajectory(GetCascadeTrajectoryRequest) returns (GetCascadeTrajectoryResponse);
+  rpc GetCascadeTrajectorySteps(GetCascadeTrajectoryStepsRequest) returns (GetCascadeTrajectoryStepsResponse);
+  rpc GetCascadeTrajectoryGeneratorMetadata(GetCascadeTrajectoryGeneratorMetadataRequest) returns (GetCascadeTrajectoryGeneratorMetadataResponse);
+  rpc GetArtifactSnapshots(GetArtifactSnapshotsRequest) returns (GetArtifactSnapshotsResponse);
+  rpc GetUserTrajectory(GetUserTrajectoryRequest) returns (GetUserTrajectoryResponse);
+  rpc GetUserTrajectoryDebug(GetUserTrajectoryDebugRequest) returns (GetUserTrajectoryDebugResponse);
+  rpc GetUserTrajectoryDescriptions(GetUserTrajectoryDescriptionsRequest) returns (GetUserTrajectoryDescriptionsResponse);
+  rpc DeleteCascadeTrajectory(DeleteCascadeTrajectoryRequest) returns (DeleteCascadeTrajectoryResponse);
+  rpc InitializeCascadePanelState(InitializeCascadePanelStateRequest) returns (InitializeCascadePanelStateResponse);
+  rpc GetPatchAndCodeChange(GetPatchAndCodeChangeRequest) returns (GetPatchAndCodeChangeResponse);
+  rpc ConvertTrajectoryToMarkdown(ConvertTrajectoryToMarkdownRequest) returns (ConvertTrajectoryToMarkdownResponse);
+  rpc CopyTrajectory(CopyTrajectoryRequest) returns (CopyTrajectoryResponse);
+  rpc LoadTrajectory(LoadTrajectoryRequest) returns (LoadTrajectoryResponse);
+  rpc CreateTrajectoryShare(CreateTrajectoryShareRequest) returns (CreateTrajectoryShareResponse);
+
+  // --- Cascade Reactive Streaming ---
+  rpc StreamCascadeReactiveUpdates(exa.reactive_component_pb.StreamReactiveUpdatesRequest) returns (stream exa.reactive_component_pb.StreamReactiveUpdatesResponse);
+  rpc StreamCascadePanelReactiveUpdates(exa.reactive_component_pb.StreamReactiveUpdatesRequest) returns (stream exa.reactive_component_pb.StreamReactiveUpdatesResponse);
+  rpc StreamCascadeSummariesReactiveUpdates(exa.reactive_component_pb.StreamReactiveUpdatesRequest) returns (stream exa.reactive_component_pb.StreamReactiveUpdatesResponse);
+  rpc StreamUserTrajectoryReactiveUpdates(exa.reactive_component_pb.StreamReactiveUpdatesRequest) returns (stream exa.reactive_component_pb.StreamReactiveUpdatesResponse);
+
+  // --- Cascade Memories ---
+  rpc GetCascadeMemories(GetCascadeMemoriesRequest) returns (GetCascadeMemoriesResponse);
+  rpc DeleteCascadeMemory(DeleteCascadeMemoryRequest) returns (DeleteCascadeMemoryResponse);
+  rpc UpdateCascadeMemory(UpdateCascadeMemoryRequest) returns (UpdateCascadeMemoryResponse);
+  rpc GetUserMemories(GetUserMemoriesRequest) returns (GetUserMemoriesResponse);
+  rpc UpdateConversationAnnotations(UpdateConversationAnnotationsRequest) returns (UpdateConversationAnnotationsResponse);
+
+  // --- Cascade NUX / Plugins ---
+  rpc GetCascadeNuxes(GetCascadeNuxesRequest) returns (GetCascadeNuxesResponse);
+  rpc GetAvailableCascadePlugins(GetAvailableCascadePluginsRequest) returns (GetAvailableCascadePluginsResponse);
+  rpc InstallCascadePlugin(InstallCascadePluginRequest) returns (InstallCascadePluginResponse);
+  rpc GetCascadePluginById(GetCascadePluginByIdRequest) returns (GetCascadePluginByIdResponse);
+
+  // --- Terminal ---
+  rpc StreamTerminalShellCommand(stream exa.codeium_common_pb.TerminalShellCommandStreamChunk) returns (StreamTerminalShellCommandResponse);
+
+  // --- Workspace / Files ---
+  rpc AddTrackedWorkspace(AddTrackedWorkspaceRequest) returns (AddTrackedWorkspaceResponse);
+  rpc RemoveTrackedWorkspace(RemoveTrackedWorkspaceRequest) returns (RemoveTrackedWorkspaceResponse);
+  rpc SetWorkingDirectories(SetWorkingDirectoriesRequest) returns (SetWorkingDirectoriesResponse);
+  rpc GetWorkingDirectories(GetWorkingDirectoriesRequest) returns (GetWorkingDirectoriesResponse);
+  rpc GetWorkspaceEditState(GetWorkspaceEditStateRequest) returns (GetWorkspaceEditStateResponse);
+  rpc GetWorkspaceInfos(GetWorkspaceInfosRequest) returns (GetWorkspaceInfosResponse);
+  rpc GetRepoInfos(GetRepoInfosRequest) returns (GetRepoInfosResponse);
+  rpc CreateWorktree(CreateWorktreeRequest) returns (CreateWorktreeResponse);
+  rpc StatUri(StatUriRequest) returns (StatUriResponse);
+  rpc GetRevisionArtifact(GetRevisionArtifactRequest) returns (GetRevisionArtifactResponse);
+  rpc GenerateCommitMessage(GenerateCommitMessageRequest) returns (GenerateCommitMessageResponse);
+  rpc UpdatePRForWorktree(UpdatePRForWorktreeRequest) returns (UpdatePRForWorktreeResponse);
+
+  // --- MCP ---
+  rpc GetMcpServerTemplates(GetMcpServerTemplatesRequest) returns (GetMcpServerTemplatesResponse);
+  rpc RefreshMcpServers(RefreshMcpServersRequest) returns (RefreshMcpServersResponse);
+  rpc GetMcpServerStates(GetMcpServerStatesRequest) returns (GetMcpServerStatesResponse);
+  rpc ListMcpResources(ListMcpResourcesRequest) returns (ListMcpResourcesResponse);
+
+  // --- UI / Chat Panel ---
+  rpc SmartFocusConversation(SmartFocusConversationRequest) returns (SmartFocusConversationResponse);
+  rpc SetBrowserOpenConversation(SetBrowserOpenConversationRequest) returns (SetBrowserOpenConversationResponse);
+  rpc RefreshContextForIdeAction(RefreshContextForIdeActionRequest) returns (RefreshContextForIdeActionResponse);
+  rpc GetMatchingContextScopeItems(GetMatchingContextScopeItemsRequest) returns (GetMatchingContextScopeItemsResponse);
+  rpc SendActionToChatPanel(SendActionToChatPanelRequest) returns (SendActionToChatPanelResponse);
+
+  // --- Model ---
+  rpc GetModelResponse(GetModelResponseRequest) returns (GetModelResponseResponse);
+  rpc SaveMediaAsArtifact(SaveMediaAsArtifactRequest) returns (SaveMediaAsArtifactResponse);
+  rpc DeleteMediaArtifact(DeleteMediaArtifactRequest) returns (DeleteMediaArtifactResponse);
+
+  // --- Experiments ---
+  rpc SetBaseExperiments(SetBaseExperimentsRequest) returns (SetBaseExperimentsResponse);
+  rpc UpdateEnterpriseExperimentsFromUrl(UpdateEnterpriseExperimentsFromUrlRequest) returns (UpdateEnterpriseExperimentsFromUrlResponse);
+
+  // --- Workflows / Agents / Rules ---
+  rpc GetAllWorkflows(GetAllWorkflowsRequest) returns (GetAllWorkflowsResponse);
+  rpc GetAllCustomAgentConfigs(GetAllCustomAgentConfigsRequest) returns (GetAllCustomAgentConfigsResponse);
+  rpc CopyBuiltinWorkflowToWorkspace(CopyBuiltinWorkflowToWorkspaceRequest) returns (CopyBuiltinWorkflowToWorkspaceResponse);
+  rpc GetAllRules(GetAllRulesRequest) returns (GetAllRulesResponse);
+  rpc GetAllSkills(GetAllSkillsRequest) returns (GetAllSkillsResponse);
+  rpc GetAgentScripts(GetAgentScriptsRequest) returns (GetAgentScriptsResponse);
+  rpc GetWebDocsOptions(GetWebDocsOptionsRequest) returns (GetWebDocsOptionsResponse);
+
+  // --- Import / Replay ---
+  rpc ImportFromCursor(ImportFromCursorRequest) returns (ImportFromCursorResponse);
+  rpc CreateCustomizationFile(CreateCustomizationFileRequest) returns (CreateCustomizationFileResponse);
+  rpc ReplayGroundTruthTrajectory(ReplayGroundTruthTrajectoryRequest) returns (ReplayGroundTruthTrajectoryResponse);
+  rpc CreateReplayWorkspace(CreateReplayWorkspaceRequest) returns (CreateReplayWorkspaceResponse);
+  rpc LoadReplayConversation(LoadReplayConversationRequest) returns (LoadReplayConversationResponse);
+
+  // --- Browser ---
+  rpc ListPages(ListPagesRequest) returns (ListPagesResponse);
+  rpc BrowserValidateCascadeOrCancelOverlay(BrowserValidateCascadeOrCancelOverlayRequest) returns (BrowserValidateCascadeOrCancelOverlayResponse);
+  rpc OpenUrl(OpenUrlRequest) returns (OpenUrlResponse);
+  rpc FocusUserPage(FocusUserPageRequest) returns (FocusUserPageResponse);
+  rpc AddToBrowserWhitelist(AddToBrowserWhitelistRequest) returns (AddToBrowserWhitelistResponse);
+  rpc CaptureConsoleLogs(CaptureConsoleLogsRequest) returns (CaptureConsoleLogsResponse);
+  rpc StartScreenRecording(StartScreenRecordingRequest) returns (StartScreenRecordingResponse);
+  rpc SaveScreenRecording(SaveScreenRecordingRequest) returns (SaveScreenRecordingResponse);
+  rpc GetBrowserWhitelistFilePath(GetBrowserWhitelistFilePathRequest) returns (GetBrowserWhitelistFilePathResponse);
+  rpc HandleScreenRecording(HandleScreenRecordingRequest) returns (HandleScreenRecordingResponse);
+  rpc GetAllBrowserWhitelistedUrls(GetAllBrowserWhitelistedUrlsRequest) returns (GetAllBrowserWhitelistedUrlsResponse);
+  rpc CaptureScreenshot(CaptureScreenshotRequest) returns (CaptureScreenshotResponse);
+  rpc SmartOpenBrowser(SmartOpenBrowserRequest) returns (SmartOpenBrowserResponse);
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum CommandRequestSource {
+  COMMAND_REQUEST_SOURCE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum DiffType {
+  DIFF_TYPE_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum SupercompleteTriggerCondition {
+  SUPERCOMPLETE_TRIGGER_CONDITION_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+enum StopReason {
+  STOP_REASON_UNSPECIFIED = 0;
+  // Additional values TBD
+}
+
+// ============================================================================
+// Cascade Core Messages
+// ============================================================================
+
+message StartCascadeRequest {
+  exa.codeium_common_pb.Metadata metadata = 1;
+  exa.codeium_common_pb.ExperimentConfig experiment_config = 2;
+  exa.jetski_cortex_pb.BaseTrajectoryIdentifier base_trajectory_identifier = 3;
+  exa.cortex_pb.CortexTrajectorySource source = 4;
+  exa.cortex_pb.CortexTrajectoryType trajectory_type = 5;
+}
+
+message StartCascadeResponse {
+  string cascade_id = 1;
+}
+
+message SendUserCascadeMessageRequest {
+  exa.codeium_common_pb.Metadata metadata = 3;
+  string cascade_id = 1;
+  repeated exa.codeium_common_pb.TextOrScopeItem items = 2;
+  exa.codeium_common_pb.ExperimentConfig experiment_config = 4;
+  exa.cortex_pb.CascadeConfig cascade_config = 5;
+  repeated exa.chat_pb.Image images = 6;
+  bool blocking = 8;
+  repeated exa.cortex_pb.Step additional_steps = 9;
+  repeated exa.codeium_common_pb.ArtifactComment artifact_comments = 10;
+  exa.chat_client_server_pb.ChatClientRequestStreamClientType client_type = 11;
+  repeated exa.codeium_common_pb.FileDiffComment file_diff_comments = 12;
+  repeated exa.codeium_common_pb.FileComment file_comments = 13;
+  repeated exa.codeium_common_pb.Media media = 14;
+  AgentScriptItem agent_script_item = 15;
+  bool propagate_error = 16;
+  exa.cortex_pb.CortexStepPlannerResponse planner_response = 17;
+}
+
+message SendUserCascadeMessageResponse {
+  bool queued = 1;
+}
+
+message CancelCascadeInvocationRequest {
+  string cascade_id = 1;
+}
+
+message CancelCascadeInvocationResponse {}
+
+message CancelCascadeStepsRequest {
+  string cascade_id = 1;
+  repeated uint32 step_indices = 2;
+}
+
+message CancelCascadeStepsResponse {}
+
+message SignalExecutableIdleRequest {
+  string conversation_id = 1;
+}
+
+message SignalExecutableIdleResponse {}
+
+message SendAllQueuedMessagesRequest {
+  string cascade_id = 1;
+}
+
+message SendAllQueuedMessagesResponse {}
+
+message DeleteQueuedUserInputStepRequest {
+  string cascade_id = 1;
+}
+
+message DeleteQueuedUserInputStepResponse {}
+
+message RevertToCascadeStepRequest {
+  exa.codeium_common_pb.Metadata metadata = 3;
+  string cascade_id = 1;
+  int32 step_index = 2;
+  exa.codeium_common_pb.ExperimentConfig experiment_config = 4;
+  exa.cortex_pb.CascadeConfig override_config = 5;
+}
+
+message RevertToCascadeStepResponse {}
+
+message GetRevertPreviewRequest {
+  string cascade_id = 1;
+}
+
+message GetRevertPreviewResponse {
+  // Fields TBD - revert preview data
+}
+
+message HandleCascadeUserInteractionRequest {
+  string cascade_id = 1;
+  exa.cortex_pb.RequestedInteraction interaction = 2;
+}
+
+message HandleCascadeUserInteractionResponse {}
+
+message AcknowledgeCascadeCodeEditRequest {
+  // Fields TBD
+}
+
+message AcknowledgeCascadeCodeEditResponse {}
+
+message AcknowledgeCodeActionStepRequest {
+  // Fields TBD
+}
+
+message AcknowledgeCodeActionStepResponse {}
+
+message GetCodeValidationStatesRequest {
+  // Fields TBD
+}
+
+message GetCodeValidationStatesResponse {
+  // Fields TBD
+}
+
+message ForceBackgroundResearchRefreshRequest {
+  // Fields TBD
+}
+
+message ForceBackgroundResearchRefreshResponse {}
+
+message ResolveOutstandingStepsRequest {
+  // Fields TBD
+}
+
+message ResolveOutstandingStepsResponse {}
+
+message RecordUserStepSnapshotRequest {
+  // Fields TBD
+}
+
+message RecordUserStepSnapshotResponse {}
+
+// ============================================================================
+// Cascade Trajectory Messages
+// ============================================================================
+
+message GetCascadeTrajectoryRequest {
+  string cascade_id = 1;
+}
+
+message GetCascadeTrajectoryResponse {
+  exa.cortex_pb.Trajectory trajectory = 1;
+  exa.cortex_pb.CascadeRunStatus status = 2;
+  uint32 num_total_steps = 3;
+  uint32 num_total_generator_metadata = 4;
+}
+
+message GetCascadeTrajectoryStepsRequest {
+  // Fields TBD - paginated step retrieval
+}
+
+message GetCascadeTrajectoryStepsResponse {
+  // Fields TBD
+}
+
+message GetCascadeTrajectoryGeneratorMetadataRequest {
+  // Fields TBD
+}
+
+message GetCascadeTrajectoryGeneratorMetadataResponse {
+  // Fields TBD
+}
+
+message GetArtifactSnapshotsRequest {
+  // Fields TBD
+}
+
+message GetArtifactSnapshotsResponse {
+  // Fields TBD
+}
+
+message GetUserTrajectoryRequest {
+  // Fields TBD
+}
+
+message GetUserTrajectoryResponse {
+  // Fields TBD
+}
+
+message GetUserTrajectoryDebugRequest {
+  // Fields TBD
+}
+
+message GetUserTrajectoryDebugResponse {
+  // Fields TBD
+}
+
+message GetUserTrajectoryDescriptionsRequest {
+  // Fields TBD
+}
+
+message GetUserTrajectoryDescriptionsResponse {
+  // Fields TBD
+}
+
+message DeleteCascadeTrajectoryRequest {
+  // Fields TBD
+}
+
+message DeleteCascadeTrajectoryResponse {}
+
+message InitializeCascadePanelStateRequest {
+  exa.codeium_common_pb.Metadata metadata = 1;
+  exa.codeium_common_pb.UserStatus user_status = 2;
+}
+
+message InitializeCascadePanelStateResponse {}
+
+message GetPatchAndCodeChangeRequest {
+  // Fields TBD
+}
+
+message GetPatchAndCodeChangeResponse {
+  // Fields TBD
+}
+
+message ConvertTrajectoryToMarkdownRequest {
+  // Fields TBD
+}
+
+message ConvertTrajectoryToMarkdownResponse {
+  // Fields TBD
+}
+
+message CopyTrajectoryRequest {
+  // Fields TBD
+}
+
+message CopyTrajectoryResponse {
+  // Fields TBD
+}
+
+message LoadTrajectoryRequest {
+  // Fields TBD
+}
+
+message LoadTrajectoryResponse {
+  // Fields TBD
+}
+
+message CreateTrajectoryShareRequest {
+  // Fields TBD
+}
+
+message CreateTrajectoryShareResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// Cascade Memories
+// ============================================================================
+
+message GetCascadeMemoriesRequest {
+  // Fields TBD
+}
+
+message GetCascadeMemoriesResponse {
+  // Fields TBD
+}
+
+message DeleteCascadeMemoryRequest {
+  // Fields TBD
+}
+
+message DeleteCascadeMemoryResponse {}
+
+message UpdateCascadeMemoryRequest {
+  // Fields TBD
+}
+
+message UpdateCascadeMemoryResponse {}
+
+message GetUserMemoriesRequest {
+  // Fields TBD
+}
+
+message GetUserMemoriesResponse {
+  // Fields TBD
+}
+
+message UpdateConversationAnnotationsRequest {
+  // Fields TBD
+}
+
+message UpdateConversationAnnotationsResponse {}
+
+// ============================================================================
+// Cascade NUX / Plugins
+// ============================================================================
+
+message GetCascadeNuxesRequest {}
+
+message GetCascadeNuxesResponse {
+  // Fields TBD
+}
+
+message GetAvailableCascadePluginsRequest {}
+
+message GetAvailableCascadePluginsResponse {
+  // Fields TBD
+}
+
+message InstallCascadePluginRequest {
+  // Fields TBD
+}
+
+message InstallCascadePluginResponse {}
+
+message GetCascadePluginByIdRequest {
+  // Fields TBD
+}
+
+message GetCascadePluginByIdResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// HandleStreamingCommand (Completions)
+// ============================================================================
+
+message HandleStreamingCommandRequest {
+  exa.codeium_common_pb.Metadata metadata = 1;
+  exa.codeium_common_pb.Document document = 2;
+  exa.codeium_common_pb.EditorOptions editor_options = 3;
+  exa.codeium_common_pb.ModelId requested_model_id = 4;
+  exa.codeium_common_pb.ExperimentConfig experiment_config = 5;
+  uint64 selection_start_line = 6;
+  uint64 selection_end_line = 7;
+  string command_text = 8;
+  CommandRequestSource request_source = 9;
+  exa.codeium_common_pb.ContextScope mentioned_scope = 10;
+  exa.codeium_common_pb.ActionPointer action_pointer = 11;
+  string parent_completion_id = 12;
+  DiffType diff_type = 13;
+  repeated exa.codeium_common_pb.CodeDiagnostic diagnostics = 14;
+  SupercompleteTriggerCondition supercomplete_trigger_condition = 15;
+  exa.codeium_common_pb.TerminalCommandData terminal_command_data = 16;
+  bool ignore_supercomplete_debounce = 17;
+  string clipboard_entry = 18;
+  repeated exa.codeium_common_pb.IntellisenseSuggestion intellisense_suggestions = 19;
+}
+
+message HandleStreamingCommandResponse {
+  string completion_id = 1;
+  string prompt_id = 2;
+  UnifiedDiff diff = 3;
+  LatencyInfo latency_info = 4;
+  uint64 selection_start_line = 5;
+  uint64 selection_end_line = 6;
+  double score = 7;
+  CharacterDiff character_diff = 8;
+  ComboDiff combo_diff = 9;
+  exa.codeium_common_pb.SuperCompleteFilterReason filter_reason = 10;
+  optional JumpPosition jump_position = 14;
+  RequestInfo request_info = 12;
+  StopReason stop_reason = 13;
+  exa.cortex_pb.Trajectory trajectory = 15;
+  string raw_text = 16;
+  string trace_id = 17;
+  optional uint64 closest_changed_line = 11;
+}
+
+message UnifiedDiff {
+  // Stub - unified diff representation
+}
+
+message UnifiedDiffChange {
+  // Stub - unified diff change
+}
+
+message LatencyInfo {
+  // Stub - latency information
+}
+
+message CharacterDiff {
+  // Stub - character-level diff
+}
+
+message ComboDiff {
+  // Stub - combo diff
+}
+
+message JumpPosition {
+  // Stub - jump position
+}
+
+message RequestInfo {
+  // Stub - request metadata
+}
+
+// ============================================================================
+// Terminal
+// ============================================================================
+
+message StreamTerminalShellCommandResponse {}
+
+// ============================================================================
+// System / Status Messages
+// ============================================================================
+
+message HeartbeatRequest {}
+message HeartbeatResponse {}
+
+message GetStatusRequest {}
+message GetStatusResponse {
+  // Fields TBD - server status
+}
+
+message ExitRequest {}
+message ExitResponse {}
+
+message SimulateSegFaultRequest {}
+message SimulateSegFaultResponse {}
+
+message GetDebugDiagnosticsRequest {}
+message GetDebugDiagnosticsResponse {
+  // Fields TBD
+}
+
+message DumpFlightRecorderRequest {}
+message DumpFlightRecorderResponse {
+  // Fields TBD
+}
+
+message DumpPprofRequest {}
+message DumpPprofResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// Configuration Messages
+// ============================================================================
+
+message GetCommandModelConfigsRequest {}
+message GetCommandModelConfigsResponse {
+  // Fields TBD
+}
+
+message GetCascadeModelConfigsRequest {}
+message GetCascadeModelConfigsResponse {
+  // Fields TBD
+}
+
+message GetCascadeModelConfigDataRequest {}
+
+message GetUserSettingsRequest {}
+message GetUserSettingsResponse {
+  exa.codeium_common_pb.UserSettings settings = 1;
+}
+
+message SetUserSettingsRequest {
+  exa.codeium_common_pb.UserSettings settings = 1;
+}
+message SetUserSettingsResponse {}
+
+message GetTeamOrganizationalControlsRequest {}
+message GetTeamOrganizationalControlsResponse {
+  // Fields TBD
+}
+
+message GetModelStatusesRequest {}
+message GetModelStatusesResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// Events / Telemetry Messages
+// ============================================================================
+
+message ProvideCompletionFeedbackRequest {
+  // Fields TBD
+}
+message ProvideCompletionFeedbackResponse {}
+
+message RecordEventRequest {
+  // Fields TBD
+}
+message RecordEventResponse {}
+
+message RecordSearchDocOpenRequest {}
+message RecordSearchDocOpenResponse {}
+
+message RecordSearchResultsViewRequest {}
+message RecordSearchResultsViewResponse {}
+
+message RecordChatFeedbackRequest {
+  // Fields TBD
+}
+message RecordChatFeedbackResponse {}
+
+message RecordChatPanelSessionRequest {
+  // Fields TBD
+}
+message RecordChatPanelSessionResponse {}
+
+message RecordCommitMessageSaveRequest {
+  // Fields TBD
+}
+message RecordCommitMessageSaveResponse {}
+
+message RecordInteractiveCascadeFeedbackRequest {
+  // Fields TBD
+}
+message RecordInteractiveCascadeFeedbackResponse {}
+
+message RecordLintsRequest {
+  // Fields TBD
+}
+message RecordLintsResponse {}
+
+message RecordUserGrepRequest {
+  // Fields TBD
+}
+message RecordUserGrepResponse {}
+
+message RecordAnalyticsEventRequest {
+  // Fields TBD
+}
+message RecordAnalyticsEventResponse {}
+
+// ============================================================================
+// User Management Messages
+// ============================================================================
+
+message RegisterGdmUserRequest {
+  // Fields TBD
+}
+message RegisterGdmUserResponse {
+  // Fields TBD
+}
+
+message MigrateApiKeyRequest {
+  // Fields TBD
+}
+message MigrateApiKeyResponse {}
+
+message GetUserStatusRequest {}
+message GetUserStatusResponse {
+  exa.codeium_common_pb.UserStatus user_status = 1;
+}
+
+message GetProfileDataRequest {}
+message GetProfileDataResponse {
+  // Fields TBD
+}
+
+message GetUserAnalyticsSummaryRequest {}
+message GetUserAnalyticsSummaryResponse {
+  // Fields TBD
+}
+
+message GetChangelogRequest {}
+message GetChangelogResponse {
+  // Fields TBD
+}
+
+message ResetOnboardingRequest {}
+message ResetOnboardingResponse {}
+
+message SkipOnboardingRequest {}
+message SkipOnboardingResponse {}
+
+message GetTermsOfServiceRequest {}
+message GetTermsOfServiceResponse {
+  // Fields TBD
+}
+
+message AcceptTermsOfServiceRequest {}
+message AcceptTermsOfServiceResponse {}
+
+message ShouldEnableUnleashRequest {}
+message ShouldEnableUnleashResponse {
+  // Fields TBD
+}
+
+message GetUnleashDataRequest {}
+message GetUnleashDataResponse {
+  // Fields TBD
+}
+
+message GetStaticExperimentStatusRequest {}
+message GetStaticExperimentStatusResponse {
+  // Fields TBD
+}
+
+message GetTranscriptionRequest {}
+message GetTranscriptionResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// Workspace / Files Messages
+// ============================================================================
+
+message AddTrackedWorkspaceRequest {
+  // Fields TBD
+}
+message AddTrackedWorkspaceResponse {}
+
+message RemoveTrackedWorkspaceRequest {
+  // Fields TBD
+}
+message RemoveTrackedWorkspaceResponse {}
+
+message SetWorkingDirectoriesRequest {
+  // Fields TBD
+}
+message SetWorkingDirectoriesResponse {}
+
+message GetWorkingDirectoriesRequest {}
+message GetWorkingDirectoriesResponse {
+  // Fields TBD
+}
+
+message GetWorkspaceEditStateRequest {}
+message GetWorkspaceEditStateResponse {
+  // Fields TBD
+}
+
+message GetWorkspaceInfosRequest {}
+message GetWorkspaceInfosResponse {
+  // Fields TBD
+}
+
+message GetRepoInfosRequest {}
+message GetRepoInfosResponse {
+  // Fields TBD
+}
+
+message CreateWorktreeRequest {
+  // Fields TBD
+}
+message CreateWorktreeResponse {
+  // Fields TBD
+}
+
+message StatUriRequest {
+  // Fields TBD
+}
+message StatUriResponse {
+  // Fields TBD
+}
+
+message GetRevisionArtifactRequest {
+  // Fields TBD
+}
+message GetRevisionArtifactResponse {
+  // Fields TBD
+}
+
+message GenerateCommitMessageRequest {
+  // Fields TBD
+}
+message GenerateCommitMessageResponse {
+  // Fields TBD
+}
+
+message UpdatePRForWorktreeRequest {
+  // Fields TBD
+}
+message UpdatePRForWorktreeResponse {}
+
+// ============================================================================
+// MCP Messages
+// ============================================================================
+
+message GetMcpServerTemplatesRequest {}
+message GetMcpServerTemplatesResponse {
+  // Fields TBD
+}
+
+message RefreshMcpServersRequest {
+  // Fields TBD
+}
+message RefreshMcpServersResponse {
+  // Fields TBD
+}
+
+message GetMcpServerStatesRequest {}
+message GetMcpServerStatesResponse {
+  // Fields TBD
+}
+
+message ListMcpResourcesRequest {
+  // Fields TBD
+}
+message ListMcpResourcesResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// UI / Chat Panel Messages
+// ============================================================================
+
+message SmartFocusConversationRequest {
+  // Fields TBD
+}
+message SmartFocusConversationResponse {
+  // Fields TBD
+}
+
+message SetBrowserOpenConversationRequest {
+  // Fields TBD
+}
+message SetBrowserOpenConversationResponse {}
+
+message RefreshContextForIdeActionRequest {
+  // Fields TBD
+}
+message RefreshContextForIdeActionResponse {}
+
+message GetMatchingContextScopeItemsRequest {
+  // Fields TBD
+}
+message GetMatchingContextScopeItemsResponse {
+  // Fields TBD
+}
+
+message SendActionToChatPanelRequest {
+  // Fields TBD
+}
+message SendActionToChatPanelResponse {}
+
+// ============================================================================
+// Model Messages
+// ============================================================================
+
+message GetModelResponseRequest {
+  // Fields TBD
+}
+message GetModelResponseResponse {
+  // Fields TBD
+}
+
+message SaveMediaAsArtifactRequest {
+  // Fields TBD
+}
+message SaveMediaAsArtifactResponse {}
+
+message DeleteMediaArtifactRequest {
+  // Fields TBD
+}
+message DeleteMediaArtifactResponse {}
+
+// ============================================================================
+// Experiment Messages
+// ============================================================================
+
+message SetBaseExperimentsRequest {
+  // Fields TBD
+}
+message SetBaseExperimentsResponse {}
+
+message UpdateEnterpriseExperimentsFromUrlRequest {
+  // Fields TBD
+}
+message UpdateEnterpriseExperimentsFromUrlResponse {}
+
+// ============================================================================
+// Workflows / Agents / Rules Messages
+// ============================================================================
+
+message GetAllWorkflowsRequest {}
+message GetAllWorkflowsResponse {
+  // Fields TBD
+}
+
+message GetAllCustomAgentConfigsRequest {}
+message GetAllCustomAgentConfigsResponse {
+  // Fields TBD
+}
+
+message CopyBuiltinWorkflowToWorkspaceRequest {
+  // Fields TBD
+}
+message CopyBuiltinWorkflowToWorkspaceResponse {}
+
+message GetAllRulesRequest {}
+message GetAllRulesResponse {
+  // Fields TBD
+}
+
+message GetAllSkillsRequest {}
+message GetAllSkillsResponse {
+  // Fields TBD
+}
+
+message GetAgentScriptsRequest {}
+message GetAgentScriptsResponse {
+  // Fields TBD
+}
+
+message GetWebDocsOptionsRequest {}
+message GetWebDocsOptionsResponse {
+  // Fields TBD
+}
+
+message AgentScriptItem {
+  // Stub - agent script item
+}
+
+message AgentScriptCommandSpec {
+  // Stub - agent script command spec
+}
+
+message AgentScriptPythonSpec {
+  // Stub - agent script python spec
+}
+
+// ============================================================================
+// Import / Replay Messages
+// ============================================================================
+
+message ImportFromCursorRequest {
+  // Fields TBD
+}
+message ImportFromCursorResponse {}
+
+message CreateCustomizationFileRequest {
+  // Fields TBD
+}
+message CreateCustomizationFileResponse {}
+
+message ReplayGroundTruthTrajectoryRequest {
+  // Fields TBD
+}
+message ReplayGroundTruthTrajectoryResponse {}
+
+message CreateReplayWorkspaceRequest {
+  // Fields TBD
+}
+message CreateReplayWorkspaceResponse {
+  // Fields TBD
+}
+
+message LoadReplayConversationRequest {
+  // Fields TBD
+}
+message LoadReplayConversationResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// Browser Messages
+// ============================================================================
+
+message ListPagesRequest {}
+message ListPagesResponse {
+  // Fields TBD
+}
+
+message BrowserValidateCascadeOrCancelOverlayRequest {
+  // Fields TBD
+}
+message BrowserValidateCascadeOrCancelOverlayResponse {}
+
+message OpenUrlRequest {
+  // Fields TBD
+}
+message OpenUrlResponse {}
+
+message FocusUserPageRequest {
+  // Fields TBD
+}
+message FocusUserPageResponse {}
+
+message AddToBrowserWhitelistRequest {
+  // Fields TBD
+}
+message AddToBrowserWhitelistResponse {}
+
+message CaptureConsoleLogsRequest {
+  // Fields TBD
+}
+message CaptureConsoleLogsResponse {
+  // Fields TBD
+}
+
+message StartScreenRecordingRequest {
+  // Fields TBD
+}
+message StartScreenRecordingResponse {}
+
+message SaveScreenRecordingRequest {
+  // Fields TBD
+}
+message SaveScreenRecordingResponse {
+  // Fields TBD
+}
+
+message GetBrowserWhitelistFilePathRequest {}
+message GetBrowserWhitelistFilePathResponse {
+  // Fields TBD
+}
+
+message HandleScreenRecordingRequest {
+  // Fields TBD
+}
+message HandleScreenRecordingResponse {
+  // Fields TBD
+}
+
+message GetAllBrowserWhitelistedUrlsRequest {}
+message GetAllBrowserWhitelistedUrlsResponse {
+  // Fields TBD
+}
+
+message CaptureScreenshotRequest {
+  // Fields TBD
+}
+message CaptureScreenshotResponse {
+  // Fields TBD
+}
+
+message SmartOpenBrowserRequest {
+  // Fields TBD
+}
+message SmartOpenBrowserResponse {
+  // Fields TBD
+}
+
+// ============================================================================
+// Helper Types
+// ============================================================================
+
+message State {
+  // Stub - generic state
+}
+
+message WorkspaceEditState {
+  // Stub - workspace edit state
+}
+
+message WorkspaceInfo {
+  // Stub - workspace info
+}
+
+message RepoInfo {
+  // Stub - repo info
+}
+
+message BranchInfo {
+  // Stub - branch info
+}
+
+message OnboardingState {
+  // Stub - onboarding state
+}
+
+message OnboardingItemState {
+  // Stub - onboarding item state
+}
+
+message ValidationState {
+  // Stub - validation state
+}
+
+message CodeTrackerState {
+  // Stub - code tracker state
+}
+
+message CodeRange {
+  // Stub - code range
+}
+
+message CodeTheme {
+  // Stub - code theme
+}
+
+message PatchStats {
+  // Stub - patch stats
+}
+
+message CompletionPart {
+  // Stub - completion part
+}
+
+message CompletionItem {
+  // Stub - completion item
+}
+
+message MultilineConfig {
+  // Stub - multiline config
+}
+
+message Suffix {
+  // Stub - suffix
+}
+
+message CommitMessageData {
+  // Stub - commit message data
+}
+
+message OAuthTokenInfo {
+  // Stub - OAuth token info
+}
+
+message CodeEditRevertPreview {
+  // Stub - code edit revert preview
+}
+
+message CodeAcknowledgementRequestInfo {
+  // Stub - code acknowledgement request info
+}
+
+message ConversationTagList {
+  // Stub - conversation tag list
+}
+
+message SupercompletePromptTrajectory {
+  // Stub - supercomplete prompt trajectory
+}

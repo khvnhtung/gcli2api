@@ -1,0 +1,566 @@
+// =============================================================================
+// Antigravity Protobuf Schema - Extracted from main.js
+// Source: /usr/share/antigravity/resources/app/out/main.js
+// Date: 2026-02-15
+// =============================================================================
+// This file contains fully resolved protobuf definitions for:
+//   1. Model Configuration (exa.codeium_common_pb)
+//   2. Billing/Credits (google.internal.cloud.code.v1internal)
+// =============================================================================
+
+syntax = "proto3";
+
+// =============================================================================
+// PACKAGE: exa.codeium_common_pb
+// =============================================================================
+
+package exa.codeium_common_pb;
+
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum Model {
+  MODEL_UNSPECIFIED = 0;
+  MODEL_CHAT_20706 = 235;
+  MODEL_GOOGLE_GEMINI_2_5_PRO = 246;
+  MODEL_CHAT_23310 = 269;
+  MODEL_CLAUDE_4_SONNET = 281;
+  MODEL_CLAUDE_4_SONNET_THINKING = 282;
+  MODEL_CLAUDE_4_OPUS = 290;
+  MODEL_CLAUDE_4_OPUS_THINKING = 291;
+  MODEL_GOOGLE_GEMINI_2_5_FLASH = 312;
+  MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING = 313;
+  MODEL_GOOGLE_GEMINI_TRAINING_POLICY = 323;
+  MODEL_GOOGLE_GEMINI_INTERNAL_BYOM = 326;
+  MODEL_GOOGLE_GEMINI_FOR_GOOGLE_2_5_PRO = 327;
+  MODEL_GOOGLE_GEMINI_NEMOSREEF = 328;
+  MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING_TOOLS = 329;
+  MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE = 330;
+  MODEL_GOOGLE_GEMINI_2_5_PRO_EVAL = 331;
+  MODEL_GOOGLE_GEMINI_2_5_FLASH_IMAGE_PREVIEW = 332;
+  MODEL_CLAUDE_4_5_SONNET = 333;
+  MODEL_CLAUDE_4_5_SONNET_THINKING = 334;
+  MODEL_GOOGLE_GEMINI_COMPUTER_USE_EXPERIMENTAL = 335;
+  MODEL_GOOGLE_GEMINI_HORIZONDAWN = 336;
+  MODEL_GOOGLE_GEMINI_PUREPRISM = 337;
+  MODEL_GOOGLE_GEMINI_GENTLEISLAND = 338;
+  MODEL_GOOGLE_GEMINI_RAINSONG = 339;
+  MODEL_CLAUDE_4_5_HAIKU = 340;
+  MODEL_CLAUDE_4_5_HAIKU_THINKING = 341;
+  MODEL_OPENAI_GPT_OSS_120B_MEDIUM = 342;
+  MODEL_GOOGLE_GEMINI_ORIONFIRE = 343;
+  MODEL_GOOGLE_GEMINI_INTERNAL_TAB_FLASH_LITE = 344;
+  MODEL_GOOGLE_GEMINI_INTERNAL_TAB_JUMP_FLASH_LITE = 345;
+  MODEL_GOOGLE_JARVIS_PROXY = 346;
+  MODEL_GOOGLE_GEMINI_COSMICFORGE = 347;
+  MODEL_GOOGLE_GEMINI_RIFTRUNNER = 348;
+  MODEL_GOOGLE_JARVIS_V4S = 349;
+  MODEL_GOOGLE_GEMINI_INFINITYJET = 350;
+  MODEL_GOOGLE_GEMINI_INFINITYBLOOM = 351;
+  MODEL_GOOGLE_GEMINI_RIFTRUNNER_THINKING_LOW = 352;
+  MODEL_GOOGLE_GEMINI_RIFTRUNNER_THINKING_HIGH = 353;
+  MODEL_PLACEHOLDER_M1 = 1001;
+  MODEL_PLACEHOLDER_M2 = 1002;
+  MODEL_PLACEHOLDER_M3 = 1003;
+  MODEL_PLACEHOLDER_M4 = 1004;
+  MODEL_PLACEHOLDER_M5 = 1005;
+  MODEL_PLACEHOLDER_M6 = 1006;
+  MODEL_PLACEHOLDER_M7 = 1007;
+  MODEL_PLACEHOLDER_M8 = 1008;
+  MODEL_PLACEHOLDER_M9 = 1009;
+  MODEL_PLACEHOLDER_M10 = 1010;
+  MODEL_PLACEHOLDER_M11 = 1011;
+}
+
+enum ModelAlias {
+  MODEL_ALIAS_UNSPECIFIED = 0;
+  MODEL_ALIAS_CASCADE_BASE = 1;
+  MODEL_ALIAS_VISTA = 3;
+  MODEL_ALIAS_SHAMU = 4;
+  MODEL_ALIAS_SWE_1 = 5;
+  MODEL_ALIAS_SWE_1_LITE = 6;
+  MODEL_ALIAS_AUTO = 7;
+  MODEL_ALIAS_RECOMMENDED = 8;
+}
+
+enum ModelType {
+  MODEL_TYPE_UNSPECIFIED = 0;
+  MODEL_TYPE_COMPLETION = 1;
+  MODEL_TYPE_CHAT = 2;
+  MODEL_TYPE_EMBED = 3;
+  MODEL_TYPE_QUERY = 4;
+}
+
+enum ModelProvider {
+  MODEL_PROVIDER_UNSPECIFIED = 0;
+  MODEL_PROVIDER_ANTIGRAVITY = 1;
+  MODEL_PROVIDER_OPENAI = 2;
+  MODEL_PROVIDER_ANTHROPIC = 3;
+  MODEL_PROVIDER_GOOGLE = 4;
+  MODEL_PROVIDER_XAI = 5;
+  MODEL_PROVIDER_DEEPSEEK = 6;
+}
+
+enum ModelPricingType {
+  MODEL_PRICING_TYPE_UNSPECIFIED = 0;
+  MODEL_PRICING_TYPE_STATIC_CREDIT = 1;
+  MODEL_PRICING_TYPE_API = 2;
+  MODEL_PRICING_TYPE_BYOK = 3;
+}
+
+enum ModelStatus {
+  MODEL_STATUS_UNSPECIFIED = 0;
+  MODEL_STATUS_INFO = 1;
+  MODEL_STATUS_WARNING = 2;
+}
+
+enum APIProvider {
+  API_PROVIDER_UNSPECIFIED = 0;
+  API_PROVIDER_INTERNAL = 1;
+  API_PROVIDER_GOOGLE_VERTEX = 3;
+  API_PROVIDER_GOOGLE_GEMINI = 24;
+  API_PROVIDER_ANTHROPIC_VERTEX = 26;
+  API_PROVIDER_GOOGLE_EVERGREEN = 30;
+  API_PROVIDER_OPENAI_VERTEX = 31;
+}
+
+enum TeamsTier {
+  TEAMS_TIER_UNSPECIFIED = 0;
+  TEAMS_TIER_TEAMS = 1;
+  TEAMS_TIER_PRO = 2;
+  TEAMS_TIER_ENTERPRISE_SAAS = 3;
+  TEAMS_TIER_HYBRID = 4;
+  TEAMS_TIER_ENTERPRISE_SELF_HOSTED = 5;
+  TEAMS_TIER_WAITLIST_PRO = 6;
+  TEAMS_TIER_TEAMS_ULTIMATE = 7;
+  TEAMS_TIER_PRO_ULTIMATE = 8;
+  TEAMS_TIER_TRIAL = 9;
+  TEAMS_TIER_ENTERPRISE_SELF_SERVE = 10;
+}
+
+enum PromptTemplaterType {
+  PROMPT_TEMPLATER_TYPE_UNSPECIFIED = 0;
+  PROMPT_TEMPLATER_TYPE_LLAMA_2 = 1;
+  PROMPT_TEMPLATER_TYPE_LLAMA_3 = 2;
+  PROMPT_TEMPLATER_TYPE_CHATML = 3;
+  PROMPT_TEMPLATER_TYPE_CHAT_TRANSCRIPT = 4;
+  PROMPT_TEMPLATER_TYPE_DEEPSEEK_V2 = 5;
+  PROMPT_TEMPLATER_TYPE_DEEPSEEK_V3 = 6;
+}
+
+enum ToolFormatterType {
+  TOOL_FORMATTER_TYPE_UNSPECIFIED = 0;
+  TOOL_FORMATTER_TYPE_LLAMA_3 = 1;
+  TOOL_FORMATTER_TYPE_HERMES = 2;
+  TOOL_FORMATTER_TYPE_XML = 3;
+  TOOL_FORMATTER_TYPE_CHAT_TRANSCRIPT = 4;
+  TOOL_FORMATTER_TYPE_NONE = 5;
+}
+
+// ---------------------------------------------------------------------------
+// MESSAGES
+// ---------------------------------------------------------------------------
+
+// Top-level model configuration (wraps generation + context check models)
+message ModelConfig {
+  ModelInfo generation_model = 1;
+  ModelInfo context_check_model = 2;
+}
+
+// Full model metadata for a specific model instance
+message ModelInfo {
+  Model model_id = 1;                          // enum Model
+  bool is_internal = 2;
+  ModelType model_type = 3;                    // enum ModelType
+  int32 max_tokens = 4;
+  string tokenizer_type = 5;
+  ModelFeatures model_features = 6;
+  APIProvider api_provider = 7;                // enum APIProvider
+  string model_name = 8;
+  bool supports_context = 9;
+  int32 embed_dim = 10;
+  string base_url = 11;
+  string chat_model_name = 12;
+  int32 max_output_tokens = 13;
+  PromptTemplaterType prompt_templater_type = 14;  // enum PromptTemplaterType
+  ToolFormatterType tool_formatter_type = 15;      // enum ToolFormatterType
+  int32 thinking_budget = 16;
+  int32 min_thinking_budget = 17;
+}
+
+// Feature flags for model capabilities
+message ModelFeatures {
+  bool supports_context_tokens = 2;
+  bool requires_instruct_tags = 3;
+  bool requires_fim_context = 4;
+  bool requires_context_snippet_prefix = 5;
+  bool requires_context_relevance_tags = 6;
+  bool requires_llama3_tokens = 7;
+  bool zero_shot_capable = 8;
+  bool requires_autocomplete_as_command = 9;
+  bool supports_cursor_aware_supercomplete = 10;
+  bool supports_images = 11;
+  bool supports_tool_calls = 12;
+  bool supports_cumulative_context = 13;
+  bool tab_jump_print_line_range = 14;
+  bool supports_thinking = 15;
+  bool supports_estimate_token_counter = 17;
+  bool add_cursor_to_find_replace_target = 18;
+  bool supports_tab_jump_use_whole_document = 19;
+  bool supports_raw_thinking = 21;
+  bool supports_pdf = 22;
+  bool supports_video = 23;
+  bool supports_model_info_override = 24;
+  bool requires_lead_in_generation = 25;
+  bool requires_no_xml_tool_examples = 26;
+  bool does_not_support_tool_choice = 27;
+  map<string, bool> supported_mime_types = 28;
+}
+
+// Oneof wrapper: either a specific Model enum or a ModelAlias
+message ModelOrAlias {
+  oneof choice {
+    Model model = 1;         // enum Model
+    ModelAlias alias = 2;    // enum ModelAlias
+  }
+}
+
+// Quota information for a model (e.g., remaining daily usage fraction)
+message QuotaInfo {
+  float remaining_fraction = 1;       // 0.0 - 1.0
+  google.protobuf.Timestamp reset_time = 2;
+}
+
+// Client-facing model configuration (what users see in the UI)
+message ClientModelConfig {
+  string label = 1;                             // Display name
+  ModelOrAlias model_or_alias = 2;              // Which model/alias this represents
+  float credit_multiplier = 3;                  // Credits cost multiplier
+  bool disabled = 4;
+  bool supports_images = 5;
+  bool supports_legacy = 6;
+  bool is_premium = 7;
+  string beta_warning_message = 8;
+  bool is_beta = 9;
+  ModelProvider provider = 10;                  // enum ModelProvider
+  bool is_recommended = 11;
+  repeated TeamsTier allowed_tiers = 12;        // Which subscription tiers can use this
+  ModelPricingType pricing_type = 13;           // enum ModelPricingType
+  string description = 14;
+  QuotaInfo quota_info = 15;
+  string tag_title = 16;
+  string tag_description = 17;
+  map<string, bool> supported_mime_types = 18;
+}
+
+// Sorting/grouping of models for UI display
+message ClientModelSort {
+  string name = 1;
+  repeated ClientModelGroup groups = 2;
+}
+
+message ClientModelGroup {
+  string group_name = 1;
+  repeated string model_labels = 2;
+}
+
+// Default model override config
+message DefaultOverrideModelConfig {
+  ModelOrAlias model_or_alias = 1;
+  string version_id = 2;
+}
+
+// Top-level cascade model configuration data (returned by server)
+message CascadeModelConfigData {
+  repeated ClientModelConfig client_model_configs = 1;
+  repeated ClientModelSort client_model_sorts = 2;
+  optional DefaultOverrideModelConfig default_override_model_config = 3;
+}
+
+
+// =============================================================================
+// PACKAGE: google.internal.cloud.code.v1internal
+// =============================================================================
+
+// package google.internal.cloud.code.v1internal;
+
+// ---------------------------------------------------------------------------
+// BILLING / CREDITS
+// ---------------------------------------------------------------------------
+
+message Credits {
+  CreditType credit_type = 1;
+  int64 credit_amount = 2;
+
+  enum CreditType {
+    CREDIT_TYPE_UNSPECIFIED = 0;
+    GOOGLE_ONE_AI = 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// USER TIER & SUBSCRIPTION
+// ---------------------------------------------------------------------------
+
+message UserTier {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool user_defined_cloudaicompanion_project = 4;
+  PrivacyNotice privacy_notice = 5;
+  bool is_default = 6;
+  optional string upgrade_subscription_uri = 7;
+  optional string upgrade_subscription_text = 8;
+  optional UpgradeType upgrade_subscription_type = 9;
+  optional string upgrade_button_text = 11;
+  optional string client_experience_tag = 12;
+  bool uses_gcp_tos = 13;
+  repeated Credits available_credits = 14;
+
+  message PrivacyNotice {
+    bool show_notice = 1;
+    optional string notice_text = 2;
+    bool minor_notice = 4;
+  }
+
+  enum UpgradeType {
+    UPGRADE_TYPE_UNSPECIFIED = 0;
+    GDP = 1;
+    GOOGLE_ONE = 2;
+    GDP_HELIUM = 3;
+    GOOGLE_ONE_HELIUM = 4;
+  }
+}
+
+message IneligibleTier {
+  IneligibleTierReasonCodes reason_code = 1;
+  string reason_message = 2;
+  string tier_id = 3;
+  string tier_name = 4;
+  string validation_error_message = 5;
+  string validation_url_link_text = 6;
+  string validation_url = 7;
+  string validation_learn_more_link_text = 8;
+  string validation_learn_more_url = 9;
+
+  enum IneligibleTierReasonCodes {
+    UNKNOWN = 0;
+    INELIGIBLE_ACCOUNT = 1;
+    UNKNOWN_LOCATION = 2;
+    UNSUPPORTED_LOCATION = 3;
+    RESTRICTED_NETWORK = 4;
+    RESTRICTED_AGE = 5;
+    NON_USER_ACCOUNT = 6;
+    DASHER_USER = 7;
+    BYOID_USER = 8;
+    RESTRICTED_DASHER_USER = 9;
+    VALIDATION_REQUIRED = 10;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ONBOARDING / LOAD CODE ASSIST
+// ---------------------------------------------------------------------------
+
+message ClientMetadata {
+  IdeType ide_type = 1;
+  string ide_version = 2;
+  string plugin_version = 3;
+  Platform platform = 4;
+  string update_channel = 5;
+  string duet_project = 6;
+  PluginType plugin_type = 7;
+  string ide_name = 8;
+
+  enum IdeType {
+    IDE_UNSPECIFIED = 0;
+    VSCODE = 1;
+    INTELLIJ = 2;
+    VSCODE_CLOUD_WORKSTATION = 3;
+    INTELLIJ_CLOUD_WORKSTATION = 4;
+    CLOUD_SHELL = 5;
+    CIDER = 6;
+    CLOUD_RUN = 7;
+    ANDROID_STUDIO = 8;
+    ANTIGRAVITY = 9;
+    JETSKI = 10;
+    COLAB = 11;
+    FIREBASE = 12;
+    CHROME_DEVTOOLS = 13;
+    GEMINI_CLI = 14;
+  }
+
+  enum Platform {
+    PLATFORM_UNSPECIFIED = 0;
+    DARWIN_AMD64 = 1;
+    DARWIN_ARM64 = 2;
+    LINUX_AMD64 = 3;
+    LINUX_ARM64 = 4;
+    WINDOWS_AMD64 = 5;
+  }
+
+  enum PluginType {
+    PLUGIN_UNSPECIFIED = 0;
+    CLOUD_CODE = 1;
+    GEMINI = 2;
+    AIPLUGIN_INTELLIJ = 3;
+    AIPLUGIN_STUDIO = 4;
+    PANTHEON = 6;
+  }
+}
+
+message Project {
+  string id = 1;
+  string name = 2;
+  int64 project_number = 3;
+}
+
+message ReleaseChannel {
+  ChannelType type = 1;
+  string name = 2;
+  string description = 3;
+
+  enum ChannelType {
+    UNKNOWN = 0;
+    STABLE = 1;
+    EXPERIMENTAL = 2;
+  }
+}
+
+message OnboardUserRequest {
+  string tier_id = 1;
+  optional string cloudaicompanion_project = 2;
+  ClientMetadata metadata = 3;
+}
+
+message OnboardUserStatus {
+  StatusCode status_code = 1;
+  string display_message = 2;
+  string message_title = 4;
+
+  enum StatusCode {
+    DEFAULT = 0;
+    NOTICE = 1;
+    WARNING = 2;
+  }
+}
+
+message OnboardUserResponse {
+  Project cloudaicompanion_project = 1;
+  optional OnboardUserStatus status = 4;
+  optional ReleaseChannel release_channel = 5;
+}
+
+message LoadCodeAssistRequest {
+  optional string cloudaicompanion_project = 1;
+  ClientMetadata metadata = 2;
+  optional Mode mode = 3;
+
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    FULL_ELIGIBILITY_CHECK = 1;
+    HEALTH_CHECK = 2;
+  }
+}
+
+message LoadCodeAssistResponse {
+  UserTier current_tier = 1;
+  repeated UserTier allowed_tiers = 2;
+  optional string cloudaicompanion_project = 3;
+  repeated IneligibleTier ineligible_tiers = 5;
+  optional bool gcp_managed = 6;
+  optional string manage_subscription_uri = 7;
+  optional ReleaseChannel release_channel = 8;
+  optional string upgrade_subscription_uri = 9;
+  optional GeminiCodeAssistSetting gemini_code_assist_setting = 10;
+  optional string g1_tier = 11;
+  UserTier paid_tier = 12;
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN CONTROLS & SETTINGS
+// ---------------------------------------------------------------------------
+
+message FetchAdminControlsRequest {
+  string project = 1;
+}
+
+message FetchAdminControlsResponse {
+  bool disable_telemetry = 1;
+  bool disable_feedback = 2;
+  RecitationPolicy recitation_policy = 3;
+  GroundingType grounding_type = 4;
+  bool secure_mode_enabled = 5;
+  McpSetting mcp_setting = 6;
+  TurboModeSetting turbo_mode_setting = 7;
+  BrowserSetting browser_setting = 8;
+  PreviewFeatureSetting preview_feature_setting = 9;
+  AgentSetting agent_setting = 10;
+  CliFeatureSetting cli_feature_setting = 11;
+
+  enum GroundingType {
+    GROUNDING_TYPE_UNSPECIFIED = 0;
+    GROUNDING_WITH_GOOGLE_SEARCH = 1;
+    WEB_GROUNDING_FOR_ENTERPRISE = 2;
+  }
+}
+
+message GeminiCodeAssistSetting {
+  bool disable_telemetry = 1;
+  bool disable_feedback = 2;
+  RecitationPolicy recitation_policy = 3;
+  GroundingType grounding_type = 4;
+  bool secure_mode_enabled = 5;
+  McpSetting mcp_setting = 6;
+  TurboModeSetting turbo_mode_setting = 7;
+  BrowserSetting browser_setting = 8;
+  PreviewFeatureSetting preview_feature_setting = 9;
+  AgentSetting agent_setting = 10;
+  CliFeatureSetting cli_feature_setting = 11;
+
+  enum GroundingType {
+    GROUNDING_TYPE_UNSPECIFIED = 0;
+    GROUNDING_WITH_GOOGLE_SEARCH = 1;
+    WEB_GROUNDING_FOR_ENTERPRISE = 2;
+  }
+}
+
+message RecitationPolicy {
+  bool disable_citations = 1;
+}
+
+message McpSetting {
+  bool mcp_enabled = 1;
+  string override_mcp_config_json = 2;
+}
+
+message TurboModeSetting {
+  bool terminal_auto_execution_enabled = 1;
+  bool browser_js_execution_enabled = 2;
+}
+
+message BrowserSetting {
+  bool browser_enabled = 1;
+  repeated string allowed_websites = 2;
+  repeated string denied_websites = 3;
+}
+
+message PreviewFeatureSetting {
+  bool preview_models_enabled = 1;
+}
+
+message AgentSetting {
+  repeated string agy_allowed_models = 1;
+}
+
+message CliFeatureSetting {
+  ExtensionsSetting extensions_setting = 1;
+  bool unmanaged_capabilities_enabled = 2;
+
+  message ExtensionsSetting {
+    bool extensions_enabled = 1;
+  }
+}

@@ -4,6 +4,7 @@ Main Web Integration - Integrates all routers and modules
 """
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
@@ -182,4 +183,10 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Enable request dumping if env var is set
+    if os.getenv("GCLI2API_DUMP_REQUESTS"):
+        from scripts.intercept_requests import setup_request_dumper
+        dump_file = setup_request_dumper()
+        print(f"[DUMP] Request dumping enabled → {dump_file}")
+
     asyncio.run(main())
