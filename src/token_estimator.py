@@ -1,6 +1,9 @@
 """Token estimation using Gemini's native countTokens API with local fallback."""
 from __future__ import annotations
 
+import base64
+import struct
+from math import ceil
 from typing import Any, Dict, List, Optional, Tuple
 
 from log import log
@@ -52,13 +55,255 @@ def scale_usage_tokens(
     return scaled_input, output_tokens
 
 
+# ==================== Image token estimation ====================
+
+# Gemini image token constants
+# See: https://ai.google.dev/gemini-api/docs/image-understanding
+_TOKENS_PER_TILE = 258
+_SMALL_IMAGE_THRESHOLD = 384  # Both dims <= this → single tile
+_MIN_CROP_UNIT = 256
+_MAX_CROP_UNIT = 768
+_FALLBACK_IMAGE_TOKENS = 1000  # Conservative default when dimensions unknown
+
+# Max base64 chars to decode for header parsing (~4KB decoded)
+_HEADER_B64_CHARS = 5400
+
+
+def _extract_image_dimensions(
+    base64_data: str, mime_type: str = ""
+) -> Optional[Tuple[int, int]]:
+    """Extract (width, height) from base64 image data by reading header bytes.
+
+    Only decodes the first ~4KB needed for header parsing.
+    Returns (width, height) or None if format is unrecognized.
+    """
+    try:
+        header_b64 = base64_data[:_HEADER_B64_CHARS]
+        # Fix base64 padding
+        padding = len(header_b64) % 4
+        if padding:
+            header_b64 += "=" * (4 - padding)
+        raw = base64.b64decode(header_b64)
+
+        if len(raw) < 8:
+            return None
+
+        # PNG: \x89PNG\r\n\x1a\n + IHDR chunk
+        if raw[:8] == b"\x89PNG\r\n\x1a\n" and len(raw) >= 24:
+            width = struct.unpack(">I", raw[16:20])[0]
+            height = struct.unpack(">I", raw[20:24])[0]
+            return (width, height)
+
+        # JPEG: \xFF\xD8
+        if raw[:2] == b"\xff\xd8":
+            return _parse_jpeg_dimensions(raw)
+
+        # GIF: GIF87a or GIF89a
+        if raw[:3] == b"GIF" and len(raw) >= 10:
+            width = struct.unpack("<H", raw[6:8])[0]
+            height = struct.unpack("<H", raw[8:10])[0]
+            return (width, height)
+
+        # WebP: RIFF....WEBP
+        if raw[:4] == b"RIFF" and len(raw) >= 30 and raw[8:12] == b"WEBP":
+            return _parse_webp_dimensions(raw)
+
+        return None
+    except Exception:
+        return None
+
+
+def _parse_jpeg_dimensions(raw: bytes) -> Optional[Tuple[int, int]]:
+    """Scan JPEG data for SOF marker to extract dimensions."""
+    i = 2
+    while i < len(raw) - 9:
+        if raw[i] != 0xFF:
+            i += 1
+            continue
+        marker = raw[i + 1]
+        # SOF0 (baseline), SOF1 (extended), SOF2 (progressive)
+        if marker in (0xC0, 0xC1, 0xC2):
+            height = struct.unpack(">H", raw[i + 5 : i + 7])[0]
+            width = struct.unpack(">H", raw[i + 7 : i + 9])[0]
+            return (width, height)
+        # Skip variable-length segments (but not RST/SOI/EOI/standalone markers)
+        if 0xC0 <= marker <= 0xFE and marker not in (
+            0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0x00,
+        ):
+            if i + 3 < len(raw):
+                seg_len = struct.unpack(">H", raw[i + 2 : i + 4])[0]
+                i += 2 + seg_len
+                continue
+        i += 2
+    return None
+
+
+def _parse_webp_dimensions(raw: bytes) -> Optional[Tuple[int, int]]:
+    """Extract dimensions from WebP data."""
+    try:
+        chunk_id = raw[12:16]
+        if chunk_id == b"VP8 " and len(raw) >= 30:
+            # Lossy VP8
+            width = struct.unpack("<H", raw[26:28])[0] & 0x3FFF
+            height = struct.unpack("<H", raw[28:30])[0] & 0x3FFF
+            return (width, height)
+        elif chunk_id == b"VP8L" and len(raw) >= 25:
+            # Lossless VP8L
+            bits = struct.unpack("<I", raw[21:25])[0]
+            width = (bits & 0x3FFF) + 1
+            height = ((bits >> 14) & 0x3FFF) + 1
+            return (width, height)
+        elif chunk_id == b"VP8X" and len(raw) >= 30:
+            # Extended VP8X
+            width = struct.unpack("<I", raw[24:27] + b"\x00")[0] + 1
+            height = struct.unpack("<I", raw[27:30] + b"\x00")[0] + 1
+            return (width, height)
+    except Exception:
+        pass
+    return None
+
+
+def _calculate_image_tokens(width: int, height: int) -> int:
+    """Calculate Gemini token cost using the crop-unit tiling formula.
+
+    Based on Google's documented formula:
+    1. crop_unit = clamp(floor(min(w,h) / 1.5), 256, 768)
+    2. tiles = ceil(w / crop_unit) * ceil(h / crop_unit)
+    3. tokens = tiles * 258
+    """
+    if width <= 0 or height <= 0:
+        return _TOKENS_PER_TILE
+
+    # Small images: single tile
+    if width <= _SMALL_IMAGE_THRESHOLD and height <= _SMALL_IMAGE_THRESHOLD:
+        return _TOKENS_PER_TILE
+
+    # Crop-unit formula
+    crop_unit_raw = int(min(width, height) / 1.5)
+    crop_unit = max(_MIN_CROP_UNIT, min(_MAX_CROP_UNIT, crop_unit_raw))
+
+    tiles_w = ceil(width / crop_unit)
+    tiles_h = ceil(height / crop_unit)
+    total_tiles = tiles_w * tiles_h
+
+    return total_tiles * _TOKENS_PER_TILE
+
+
+def _estimate_image_block_tokens(block: Dict[str, Any]) -> int:
+    """Estimate Gemini token cost for a single image content block.
+
+    Handles both Anthropic format (type=image, source.data) and
+    Gemini format (inlineData.data). Falls back to data-size heuristic
+    if dimensions can't be extracted from the header.
+    """
+    base64_data = ""
+    mime_type = ""
+
+    # Anthropic format: {"type": "image", "source": {"type": "base64", ...}}
+    source = block.get("source")
+    if isinstance(source, dict) and source.get("type") == "base64":
+        base64_data = source.get("data", "")
+        mime_type = source.get("media_type", "")
+    # Gemini format: {"inlineData": {"mimeType": "...", "data": "..."}}
+    elif "inlineData" in block:
+        inline = block.get("inlineData") or {}
+        base64_data = inline.get("data", "")
+        mime_type = inline.get("mimeType", "")
+
+    if not base64_data:
+        return _FALLBACK_IMAGE_TOKENS
+
+    # Try to extract dimensions from the binary header
+    dims = _extract_image_dimensions(base64_data, mime_type)
+    if dims:
+        width, height = dims
+        tokens = _calculate_image_tokens(width, height)
+        log.debug(f"[TOKEN_COUNT] Image {width}x{height} → {tokens} tokens ({dims_label(width, height)})")
+        return tokens
+
+    # Fallback: estimate from base64 data length
+    return _estimate_tokens_from_data_size(len(base64_data))
+
+
+def dims_label(w: int, h: int) -> str:
+    """Human-readable label for common resolutions."""
+    pixels = w * h
+    if pixels <= 384 * 384:
+        return "small"
+    elif pixels <= 1280 * 720:
+        return "720p"
+    elif pixels <= 1920 * 1080:
+        return "1080p"
+    elif pixels <= 2560 * 1440:
+        return "1440p"
+    else:
+        return "4K+"
+
+
+def _estimate_tokens_from_data_size(base64_len: int) -> int:
+    """Estimate image tokens from base64 data length when dimensions unavailable.
+
+    Uses a size-based lookup since compression ratios vary too widely
+    (0.1-50 bytes/pixel) for a reliable pixels-from-bytes heuristic.
+    """
+    if base64_len <= 0:
+        return _FALLBACK_IMAGE_TOKENS
+
+    # base64 → raw bytes: ~75%
+    raw_bytes = base64_len * 3 // 4
+
+    # Size-based estimation (conservative — prefer overcount to undercount)
+    if raw_bytes < 50_000:
+        # Small file: likely a small image or icon
+        return _TOKENS_PER_TILE  # 258
+    elif raw_bytes < 200_000:
+        # Medium: typical screenshot or photo thumbnail
+        # Assume ~720p equivalent → 6 tiles
+        return 6 * _TOKENS_PER_TILE  # 1548
+    elif raw_bytes < 500_000:
+        # Large: high-quality screenshot or photo
+        # Assume ~1080p equivalent → 6 tiles
+        return 6 * _TOKENS_PER_TILE  # 1548
+    elif raw_bytes < 2_000_000:
+        # Very large: 1440p+ or uncompressed
+        return 8 * _TOKENS_PER_TILE  # 2064
+    else:
+        # Huge: 4K or larger
+        return 15 * _TOKENS_PER_TILE  # 3870
+
+
+def _count_image_tokens_in_payload(payload: Dict[str, Any]) -> int:
+    """Walk the payload and sum token costs for all image blocks."""
+    total = 0
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return 0
+
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "image" or "inlineData" in item:
+                total += _estimate_image_block_tokens(item)
+
+    return total
+
+
 # ==================== Native countTokens via Gemini API ====================
 
 
 def _anthropic_messages_to_gemini_contents(
     messages: List[Dict[str, Any]],
+    skip_images: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Lightweight conversion of Anthropic messages to Gemini contents for counting only."""
+    """Lightweight conversion of Anthropic messages to Gemini contents for counting only.
+
+    When skip_images=True, image blocks are omitted (for hybrid counting where
+    images are counted separately via dimension-based estimation).
+    """
     contents: List[Dict[str, Any]] = []
 
     for msg in messages:
@@ -80,6 +325,8 @@ def _anthropic_messages_to_gemini_contents(
                     if text.strip():
                         parts.append({"text": text})
                 elif item_type == "image":
+                    if skip_images:
+                        continue
                     source = item.get("source") or {}
                     if source.get("type") == "base64":
                         parts.append({
@@ -144,8 +391,8 @@ async def count_tokens_native(
     """Count tokens via Gemini's native countTokens API.
 
     Returns totalTokens on success, None on failure (caller should fall back).
-    Skips native counting for payloads with images since the API counts base64
-    bytes as tokens, inflating the count massively.
+    For payloads with images, uses a hybrid approach: native count for text
+    (with images stripped) + dimension-based image token estimation.
     """
     from config import get_code_assist_endpoint
     from src.credential_manager import credential_manager
@@ -155,19 +402,26 @@ async def count_tokens_native(
     if not isinstance(messages, list) or not messages:
         return None
 
-    # Native countTokens counts base64 image data as raw tokens — skip to local fallback
-    if _payload_has_images(payload):
-        log.debug("[TOKEN_COUNT] Payload has images, skipping native (would inflate count)")
-        return None
+    has_images = _payload_has_images(payload)
 
-    # Convert Anthropic messages → Gemini contents
+    # Convert Anthropic messages → Gemini contents (skip images for native counting)
     try:
-        contents = _anthropic_messages_to_gemini_contents(messages)
+        contents = _anthropic_messages_to_gemini_contents(messages, skip_images=has_images)
     except Exception as e:
         log.debug(f"[TOKEN_COUNT] Failed to convert messages: {e}")
         return None
 
     if not contents:
+        # If payload was only images with no text, just return image tokens
+        if has_images:
+            image_tokens = _count_image_tokens_in_payload(payload)
+            extra = _estimate_system_and_tools(payload)
+            total = image_tokens + extra
+            log.debug(
+                f"[TOKEN_COUNT] Images-only payload: image_tokens={image_tokens}, "
+                f"system+tools={extra}, total={total}"
+            )
+            return total
         return None
 
     # Get a credential (prefer geminicli, fall back to antigravity)
@@ -209,11 +463,17 @@ async def count_tokens_native(
             # Native endpoint only counts contents, not system/tools.
             # Add a rough estimate for those (text-only, no images → chars/4 is safe).
             extra = _estimate_system_and_tools(payload)
-            total = content_tokens + extra
+
+            # For image payloads, add dimension-based image token estimate
+            image_tokens = 0
+            if has_images:
+                image_tokens = _count_image_tokens_in_payload(payload)
+
+            total = content_tokens + extra + image_tokens
 
             log.debug(
-                f"[TOKEN_COUNT] Native: contents={content_tokens}, "
-                f"system+tools={extra}, total={total}"
+                f"[TOKEN_COUNT] Native hybrid: text={content_tokens}, "
+                f"images={image_tokens}, system+tools={extra}, total={total}"
             )
             return total
         else:
@@ -252,22 +512,23 @@ def _estimate_system_and_tools(payload: Dict[str, Any]) -> int:
 
 
 def estimate_input_tokens(payload: Dict[str, Any]) -> int:
-    """Local fallback: chars/4 for text, fixed cost per image.
+    """Local fallback: chars/4 for text, dimension-based cost per image.
 
-    Skips base64 data fields to avoid inflating counts for images.
+    Skips base64 data fields to avoid inflating text counts.
+    Uses image header parsing for accurate per-image token estimation.
     """
     total_chars = 0
-    image_count = 0
+    image_tokens = 0
 
     def _walk(obj: Any, inside_image: bool = False) -> None:
-        nonlocal total_chars, image_count
+        nonlocal total_chars, image_tokens
         if isinstance(obj, str):
             if not inside_image:
                 total_chars += len(obj)
         elif isinstance(obj, dict):
             is_image = obj.get("type") == "image" or "inlineData" in obj
             if is_image:
-                image_count += 1
+                image_tokens += _estimate_image_block_tokens(obj)
             for k, v in obj.items():
                 # Skip base64 data fields inside image blocks
                 if is_image and k in ("data", "source"):
@@ -283,4 +544,4 @@ def estimate_input_tokens(payload: Dict[str, Any]) -> int:
                 _walk(item, inside_image)
 
     _walk(payload)
-    return max(1, total_chars // 4 + image_count * 300)
+    return max(1, total_chars // 4 + image_tokens)
