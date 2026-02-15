@@ -18,69 +18,100 @@ GEMINICLI_USER_AGENT = os.getenv("GEMINICLI_USER_AGENT", "GeminiCLI/0.1.5 (Windo
 
 # ====================== Dynamic Antigravity Version ======================
 # Google-side Antigravity endpoints enforce a minimum client version.
-# We dynamically fetch the latest version from Google's updater API.
+# We dynamically fetch the latest version from Google's auto-updater API.
+# The API path format is: /api/update/{platform}-{arch}/stable/{current_version}
+# It returns JSON with a "productVersion" field containing the latest client version.
 
-VERSION_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
-CHANGELOG_URL = "https://antigravity.google/changelog"
-FALLBACK_VERSION = "1.15.8"  # Safe fallback if fetch fails
-VERSION_REGEX = re.compile(r"\d+\.\d+\.\d+")
+# Platform-arch combos that the updater API accepts (same as Electron update paths)
+_UPDATER_PLATFORM_MAP = {
+    ("linux", "x86_64"): "linux-x64",
+    ("linux", "aarch64"): "linux-arm64",
+    ("darwin", "x86_64"): "darwin-x64",
+    ("darwin", "arm64"): "darwin-arm64",
+}
+
+VERSION_BASE_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
+FALLBACK_VERSION = "1.107.0"  # Keep reasonably current; updated 2026-02-15
 
 # Cache the fetched version to avoid repeated requests
 _cached_antigravity_version: Optional[str] = None
 
 
+def _get_updater_platform() -> str:
+    """Map current OS/arch to the updater API's platform-arch string."""
+    os_name = platform.system().lower()
+    arch = platform.machine().lower()
+    return _UPDATER_PLATFORM_MAP.get((os_name, arch), "linux-x64")
+
+
 def _fetch_antigravity_version() -> str:
-    """Fetch the latest Antigravity version from Google's updater API."""
+    """Fetch the latest Antigravity version from Google's updater API.
+
+    Calls the proper update check endpoint:
+        GET /api/update/{platform}/stable/{current_version}
+    and extracts "productVersion" from the JSON response.
+    """
     global _cached_antigravity_version
-    
+
     # Return cached version if available
     if _cached_antigravity_version:
         return _cached_antigravity_version
-    
+
     # Check for env override first
     env_override = os.getenv("ANTIGRAVITY_USER_AGENT")
     if env_override:
         log.info(f"Using ANTIGRAVITY_USER_AGENT from env: {env_override}")
         return env_override
-    
+
     import requests
-    
-    # Try fetching from updater API
-    for url, name in [(VERSION_URL, "updater-api"), (CHANGELOG_URL, "changelog")]:
-        try:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                text = resp.text[:5000]  # Limit scan for efficiency
-                match = VERSION_REGEX.search(text)
-                if match:
-                    version = match.group()
-                    _cached_antigravity_version = version
-                    log.info(f"Fetched Antigravity version {version} from {name}")
-                    return version
-        except Exception as e:
-            log.debug(f"Failed to fetch version from {name}: {e}")
-    
+
+    plat = _get_updater_platform()
+    # Use a very old version so the API always returns the latest
+    url = f"{VERSION_BASE_URL}/api/update/{plat}/stable/0.0.1"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            version = data.get("productVersion")
+            if version:
+                _cached_antigravity_version = version
+                log.info(f"Fetched Antigravity version {version} from updater API")
+                return version
+            log.debug(f"Updater API response missing productVersion: {list(data.keys())}")
+    except Exception as e:
+        log.debug(f"Failed to fetch version from updater API: {e}")
+
     # Fallback
     log.warning(f"Using fallback Antigravity version: {FALLBACK_VERSION}")
     _cached_antigravity_version = FALLBACK_VERSION
     return FALLBACK_VERSION
 
 
+# Arch mapping: Python platform.machine() → Antigravity UA arch string
+# Real client uses Electron-style arch names: x64, arm64
+_ARCH_MAP = {
+    "x86_64": "x64",
+    "amd64": "x64",
+    "aarch64": "arm64",
+}
+
+
 def get_antigravity_user_agent() -> str:
-    """Get the Antigravity User-Agent string with dynamic version."""
+    """Get the Antigravity User-Agent string with dynamic version.
+
+    Format: antigravity/<version> <os>/<arch>
+    Example: antigravity/1.107.0 linux/x64
+    """
     # Check for full override first
     env_override = os.getenv("ANTIGRAVITY_USER_AGENT")
     if env_override:
         return env_override
 
     version = _fetch_antigravity_version()
-    # Detect OS and arch
     os_name = platform.system().lower()
     arch = platform.machine().lower()
-    # Normalize arch names to match Antigravity-Manager expectations.
-    # In particular, upstream/proxies may reject linux/amd64 and expect linux/x86_64.
-    if arch == "amd64":
-        arch = "x86_64"
+    # Normalize to Electron-style arch names (real client uses x64, not x86_64)
+    arch = _ARCH_MAP.get(arch, arch)
 
     return f"antigravity/{version} {os_name}/{arch}"
 

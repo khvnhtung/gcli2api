@@ -51,7 +51,7 @@ class HttpxClientManager:
             limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
 
             # 默认超时设置，请求时可覆盖
-            self._client = httpx.AsyncClient(limits=limits, timeout=60.0, **kwargs)
+            self._client = httpx.AsyncClient(limits=limits, timeout=60.0, http2=True, **kwargs)
             self._client_proxy = current_proxy
 
         return self._client
