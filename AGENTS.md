@@ -568,9 +568,40 @@ Auditable record of every design decision made when building the Antigravity pro
 
 | Decision | Type | Location | Notes |
 |----------|------|----------|-------|
-| Clamp `budget_tokens` minimum to 1024 | WORKAROUND | `src/converter/anthropic2gemini.py:1256-1261` | Gemini API hard minimum |
-| Map Claude `adaptive` thinking → fixed 32000 tokens | WORKAROUND | `src/converter/anthropic2gemini.py:1266-1268` | Antigravity has no true adaptive mode |
-| Map `effortLevel` (LOW/MEDIUM/HIGH) → `thinkingBudget` (4096/16384/32000) | WORKAROUND | `src/api/antigravity.py:362-384` | Antigravity rejects `effortLevel` with 400; emulate via budget. HIGH=32000 matches Claude Code's default (31999 rounded). |
+| Model-aware budget clamping: Claude ≥1024, Gemini pass-through | WORKAROUND | `src/converter/gemini_fix.py:299-308` | Antigravity backend enforces 1024 minimum for Claude. Gemini models accept much lower (32 for flash, 128 for pro). Old code clamped ALL models to 1024 in `anthropic2gemini.py`. |
+| Read `output_config.effort` for adaptive thinking budget | WORKAROUND | `src/converter/anthropic2gemini.py:1281-1291` | OpenCode puts effort in `output_config.effort`, not `thinking.effort`. Was reading wrong field. |
+| Map adaptive effort → budget: low=4096, medium=16384, high=32000, max=48000 | WORKAROUND | `src/converter/anthropic2gemini.py:1286-1294` | Antigravity has no true adaptive mode; emulate via budget |
+| Map `effortLevel` (LOW/MEDIUM/HIGH) → `thinkingBudget` (4096/16384/32000) | WORKAROUND | `src/api/antigravity.py:363-391` | Antigravity rejects `effortLevel` with 400; emulate via budget. Won't downgrade existing higher budget (e.g., adaptive "max" → 48000 preserved). |
+| Strip `_anthropic_thinking` from generationConfig early | WORKAROUND | `src/converter/gemini_fix.py:206-208` | Internal field leaked to GeminiCLI API causing 400 errors. Must strip before either code path. |
+
+**Server-reported thinking budgets** (from `v1internal:fetchAvailableModels`):
+
+| Model | Default Budget | Min Budget | Notes |
+|-------|---------------|------------|-------|
+| gemini-3-flash | -1 (dynamic) | 32 | Model always thinks; budget is advisory cap |
+| gemini-3-pro-high | -1 (dynamic) | 128 | |
+| gemini-3-pro-low | 128 | 128 | Tight budget for low tier |
+| gemini-2.5-flash | 1024 | N/A | |
+| gemini-2.5-pro | 1024 | 128 | |
+| claude-sonnet-4-5-thinking | 1024 | N/A | Antigravity enforces 1024 minimum |
+| claude-opus-4-6-thinking | 1024 | N/A | Antigravity enforces 1024 minimum |
+
+Key: `thinkingBudget: -1` means dynamic/always-on thinking. Server decides budget. Client should omit `thinkingBudget` or set `includeThoughts: true` without budget.
+
+### OpenCode Compatibility
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `thinking: {type: "adaptive"}` | HANDLED | Mapped to fixed budgets per effort level |
+| `thinking: {type: "enabled", budget_tokens: N}` | HANDLED | Passed through; Claude clamped to ≥1024 |
+| `output_config: {effort: "low\|medium\|high\|max"}` | HANDLED | Mapped to effortLevel (GeminiCLI) or thinkingBudget (Antigravity) |
+| `cache_control: {type: "ephemeral"}` | HANDLED | Stripped in `anthropic2gemini.py:111-171` |
+| `signature_delta` in SSE streams | HANDLED | Emitted from `thoughtSignature` in Gemini responses. Missing for Claude on Antigravity (upstream limitation). |
+| `anthropic-beta` headers | NOT CHECKED | gcli2api behaves as if all betas enabled (always emits thinking, signatures, tool_use) |
+| `speed: "fast"` | NOT HANDLED | Silently ignored. Low impact — model responds at normal speed. |
+| `compaction` / `compaction_delta` | NOT HANDLED | Claude-specific context management. Not produced by Gemini/Antigravity backend. |
+| Fine-grained tool streaming | PARTIAL | Tool input sent as single chunk (valid but not progressive). Cosmetic difference only. |
+| `max_tokens` with thinking | HANDLED | gcli2api forces `maxOutputTokens: 64000` (more generous than client's value). No truncation risk. |
 
 ### Thinking / Signature Handling
 

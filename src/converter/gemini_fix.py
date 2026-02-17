@@ -203,6 +203,10 @@ async def normalize_gemini_request(
     return_thoughts = await get_return_thoughts_to_frontend()
 
     # ========== 模式特定处理 ==========
+    # Strip internal-only fields that must never reach the upstream API.
+    # Save the value first — the Antigravity path needs it for adaptive thinking detection.
+    anthropic_thinking = generation_config.pop("_anthropic_thinking", None)
+
     if mode == "geminicli":
         # 1. 思考设置
         # 优先使用 get_thinking_settings 获取的思考预算和等级
@@ -223,6 +227,22 @@ async def normalize_gemini_request(
 
             # 设置思考预算或等级（互斥）
             if thinking_budget is not None:
+                # Enforce model-specific minimum budgets (from v1internal:fetchAvailableModels)
+                base = get_base_model_name(model)
+                if "gemini-3" in base and "flash" in base:
+                    min_budget = 32
+                elif "gemini-3" in base:  # pro variants
+                    min_budget = 128
+                elif "gemini-2.5" in base and "pro" in base:
+                    min_budget = 128
+                else:
+                    min_budget = 0  # no known minimum
+                if min_budget > 0 and thinking_budget < min_budget:
+                    log.warning(
+                        f"[GEMINI_FIX] thinkingBudget {thinking_budget} below"
+                        f" model minimum {min_budget} for {base}, clamping"
+                    )
+                    thinking_budget = min_budget
                 thinking_config["thinkingBudget"] = thinking_budget
                 thinking_config.pop("thinkingLevel", None)  # 避免与 thinkingBudget 冲突
             elif thinking_level is not None:
@@ -287,7 +307,6 @@ async def normalize_gemini_request(
             is_claude = "claude" in model.lower()
             existing_thinking = generation_config.get("thinkingConfig", {})
             has_budget = "thinkingBudget" in existing_thinking and existing_thinking["thinkingBudget"] != 0
-            anthropic_thinking = generation_config.pop("_anthropic_thinking", None)
 
             if is_thinking_model(model) or has_budget:
                 if is_claude:
@@ -296,7 +315,14 @@ async def normalize_gemini_request(
                     thinking_config: dict = {"include_thoughts": return_thoughts}
 
                     if "thinkingBudget" in existing_thinking:
-                        thinking_config["thinking_budget"] = existing_thinking["thinkingBudget"]
+                        # Antigravity backend enforces minimum 1024 for Claude models
+                        budget = max(1024, existing_thinking["thinkingBudget"])
+                        if existing_thinking["thinkingBudget"] < 1024:
+                            log.warning(
+                                f"[ANTIGRAVITY] Claude budget {existing_thinking['thinkingBudget']}"
+                                f" below Antigravity minimum 1024, clamping to 1024"
+                            )
+                        thinking_config["thinking_budget"] = budget
                     elif anthropic_thinking and anthropic_thinking.get("type") == "adaptive":
                         # Antigravity doesn't support true adaptive — use fixed budget
                         # Claude Code uses 31999 for non-adaptive; we match that

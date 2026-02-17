@@ -101,14 +101,6 @@ _UPDATER_PLATFORM_MAP = {
     ("darwin", "arm64"): "darwin-arm64",
 }
 
-# Arch mapping: Python platform.machine() → Electron/Node.js-style arch string
-# Used by both Antigravity and GeminiCLI UA construction
-_ARCH_MAP = {
-    "x86_64": "x64",
-    "amd64": "x64",
-    "aarch64": "arm64",
-}
-
 VERSION_BASE_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
 FALLBACK_VERSION = "1.107.0"  # Keep reasonably current; updated 2026-02-15
 

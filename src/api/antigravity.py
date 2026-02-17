@@ -377,12 +377,18 @@ async def stream_request(
             target_budget = effort_budget_map.get(effort, 32000)
             thinking_config = gen_config.get("thinkingConfig")
             if isinstance(thinking_config, dict):
-                # gemini_fix.py converts to snake_case for Claude models
-                if "thinking_budget" in thinking_config:
-                    thinking_config["thinking_budget"] = target_budget
+                # Don't downgrade if upstream converter already set a higher budget
+                # (e.g., adaptive "max" effort → 48000)
+                current = thinking_config.get("thinking_budget") or thinking_config.get("thinkingBudget") or 0
+                if current > target_budget:
+                    log.info(f"[ADAPTIVE-EMULATION] effort={effort} → keeping existing budget {current} (> {target_budget})")
                 else:
-                    thinking_config["thinkingBudget"] = target_budget
-                log.info(f"[ADAPTIVE-EMULATION] effort={effort} → thinkingBudget={target_budget}")
+                    # gemini_fix.py converts to snake_case for Claude models
+                    if "thinking_budget" in thinking_config:
+                        thinking_config["thinking_budget"] = target_budget
+                    else:
+                        thinking_config["thinkingBudget"] = target_budget
+                    log.info(f"[ADAPTIVE-EMULATION] effort={effort} → thinkingBudget={target_budget}")
 
     # 3. 调用stream_post_async进行请求
     retry_config = await get_retry_config()
@@ -1014,11 +1020,16 @@ async def non_stream_request(
             target_budget = effort_budget_map.get(effort, 32000)
             thinking_config = gen_config.get("thinkingConfig")
             if isinstance(thinking_config, dict):
-                if "thinking_budget" in thinking_config:
-                    thinking_config["thinking_budget"] = target_budget
+                # Don't downgrade if upstream converter already set a higher budget
+                current = thinking_config.get("thinking_budget") or thinking_config.get("thinkingBudget") or 0
+                if current > target_budget:
+                    log.info(f"[ADAPTIVE-EMULATION] effort={effort} → keeping existing budget {current} (> {target_budget})")
                 else:
-                    thinking_config["thinkingBudget"] = target_budget
-                log.info(f"[ADAPTIVE-EMULATION] effort={effort} → thinkingBudget={target_budget}")
+                    if "thinking_budget" in thinking_config:
+                        thinking_config["thinking_budget"] = target_budget
+                    else:
+                        thinking_config["thinkingBudget"] = target_budget
+                    log.info(f"[ADAPTIVE-EMULATION] effort={effort} → thinkingBudget={target_budget}")
 
     # 3. 调用post_async进行请求
     retry_config = await get_retry_config()

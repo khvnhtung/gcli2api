@@ -1266,20 +1266,26 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
             is_plan_mode = thinking_type == "enabled"
             thinking_config: Dict[str, Any] = {}
 
-            # CRITICAL FIX: Gemini API requires minimum 1024 tokens for thinking budget
+            # Pass through the client's budget_tokens directly.
+            # Model-specific minimum clamping happens downstream in normalize_gemini_request()
+            # where the actual model name is known.
             if budget_tokens is not None:
-                effective_budget = max(1024, int(budget_tokens))
-                if budget_tokens < 1024:
-                    log.warning(f"[ANTHROPIC2GEMINI] budget_tokens {budget_tokens} below minimum 1024, using 1024")
-                thinking_config["thinkingBudget"] = effective_budget
+                thinking_config["thinkingBudget"] = int(budget_tokens)
             elif thinking_type == "enabled":
                 # Explicit enabled without budget — use large default
                 thinking_config["thinkingBudget"] = 48000
             else:
                 # Adaptive: Antigravity doesn't support true adaptive,
                 # so we map the effort level to specific budgets.
-                # OpenCode sends effort: "low"|"medium"|"high"|"max" for Opus 4.6
-                effort = thinking.get("effort", "high")
+                # OpenCode sends effort in output_config.effort (not thinking.effort)
+                effort = thinking.get("effort")
+                if effort is None:
+                    # Fall back to output_config.effort (where OpenCode actually puts it)
+                    oc = payload.get("output_config")
+                    if isinstance(oc, dict):
+                        effort = oc.get("effort", "high")
+                    else:
+                        effort = "high"
                 adaptive_budgets = {
                     "low": 4096,
                     "medium": 16384,
