@@ -47,9 +47,21 @@ WEB_SEARCH_PATTERNS = {"web_search", "google_search", "google_search_retrieval"}
 # MIN_SIGNATURE_LENGTH is now imported from thoughtSignature_fix
 
 
+def _get_signature_from_block(block: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract signature from a thinking block, checking both Anthropic ('signature')
+    and Gemini ('thoughtSignature') field names.
+
+    Returns:
+        The signature string, or None if not present.
+    """
+    return block.get("signature") or block.get("thoughtSignature")
+
+
 def has_valid_thoughtsignature(block: Dict[str, Any]) -> bool:
     """
-    检查 thinking 块是否有有效签名
+    检查 thinking 块是否有有效签名.
+    Checks both 'signature' (Anthropic/AI SDK standard) and 'thoughtSignature' (Gemini).
     
     Args:
         block: content block 字典
@@ -65,14 +77,14 @@ def has_valid_thoughtsignature(block: Dict[str, Any]) -> bool:
         return True  # 非 thinking 块默认有效
     
     thinking = block.get("thinking", "")
-    thoughtsignature = block.get("thoughtSignature")
+    sig = _get_signature_from_block(block)
     
-    # 空 thinking + 任意 thoughtsignature = 有效 (trailing signature case)
-    if not thinking and thoughtsignature is not None:
+    # 空 thinking + 任意 signature = 有效 (trailing signature case)
+    if not thinking and sig is not None:
         return True
     
-    # 有内容 + 足够长度的 thoughtsignature = 有效
-    if thoughtsignature and isinstance(thoughtsignature, str) and len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
+    # 有内容 + 足够长度的 signature = 有效
+    if sig and isinstance(sig, str) and len(sig) >= MIN_SIGNATURE_LENGTH:
         return True
     
     return False
@@ -101,9 +113,10 @@ def sanitize_thinking_block(block: Dict[str, Any]) -> Dict[str, Any]:
         "thinking": block.get("thinking", "")
     }
     
-    thoughtsignature = block.get("thoughtSignature")
-    if thoughtsignature:
-        sanitized["thoughtSignature"] = thoughtsignature
+    # Accept both 'signature' (Anthropic/AI SDK) and 'thoughtSignature' (Gemini)
+    sig = _get_signature_from_block(block)
+    if sig:
+        sanitized["thoughtSignature"] = sig
     
     return sanitized
 
@@ -975,8 +988,8 @@ def convert_messages_to_contents(
                         "thought": True,
                     }
                     
-                    # 如果有 thoughtsignature 则添加
-                    thoughtsignature = item.get("thoughtSignature")
+                    # Accept both 'signature' (Anthropic/AI SDK) and 'thoughtSignature' (Gemini)
+                    thoughtsignature = item.get("signature") or item.get("thoughtSignature")
                     if thoughtsignature:
                         part["thoughtSignature"] = thoughtsignature
                     
@@ -994,8 +1007,8 @@ def convert_messages_to_contents(
                         "thought": True,
                     }
                     
-                    # 如果有 thoughtsignature 则添加
-                    thoughtsignature = item.get("thoughtSignature")
+                    # Accept both 'signature' (Anthropic/AI SDK) and 'thoughtSignature' (Gemini)
+                    thoughtsignature = item.get("signature") or item.get("thoughtSignature")
                     if thoughtsignature:
                         part_dict["thoughtSignature"] = thoughtsignature
                     
@@ -1264,8 +1277,18 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
                 thinking_config["thinkingBudget"] = 48000
             else:
                 # Adaptive: Antigravity doesn't support true adaptive,
-                # so we set a fixed budget matching Claude Code's default (31999)
-                thinking_config["thinkingBudget"] = 32000
+                # so we map the effort level to specific budgets.
+                # OpenCode sends effort: "low"|"medium"|"high"|"max" for Opus 4.6
+                effort = thinking.get("effort", "high")
+                adaptive_budgets = {
+                    "low": 4096,
+                    "medium": 16384,
+                    "high": 32000,
+                    "max": 48000,
+                }
+                thinking_config["thinkingBudget"] = adaptive_budgets.get(
+                    str(effort).lower(), 32000
+                )
 
             thinking_config["includeThoughts"] = True
 
@@ -1459,10 +1482,10 @@ def gemini_to_anthropic_response(
 
             block: Dict[str, Any] = {"type": "thinking", "thinking": str(thinking_text)}
 
-            # 如果有 thoughtsignature 则添加
+            # Use 'signature' (Anthropic standard) in output, read 'thoughtSignature' from Gemini
             thoughtsignature = part.get("thoughtSignature")
             if thoughtsignature:
-                block["thoughtSignature"] = thoughtsignature
+                block["signature"] = thoughtsignature
                 # [Phase 3] Cache thinking signature with model family
                 if len(thoughtsignature) >= MIN_SIGNATURE_LENGTH:
                     model_family = get_model_family(model)
@@ -1491,12 +1514,14 @@ def gemini_to_anthropic_response(
                 if session_id and message_count and len(thoughtsignature) >= MIN_SESSION_SIGNATURE_LENGTH:
                     cache_session_signature(session_id, thoughtsignature, message_count)
 
-            # 对工具调用ID进行签名编码
-            encoded_id = encode_tool_id_with_signature(original_id, thoughtsignature)
+            # Emit clean tool ID without signature encoding.
+            # Signatures are now delivered via signature_delta on thinking blocks
+            # and cached server-side for round-trip restoration.
+            # Keep encode_tool_id_with_signature for backward compat with Claude Code clients.
             content.append(
                 {
                     "type": "tool_use",
-                    "id": encoded_id,
+                    "id": original_id,
                     "name": fc.get("name") or "",
                     "input": _remove_nulls_for_tool_input(fc.get("args", {}) or {}),
                 }
@@ -1603,16 +1628,31 @@ async def gemini_stream_to_anthropic_stream(
         return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
 
     def _close_block() -> Optional[bytes]:
-        """关闭当前内容块"""
-        nonlocal current_block_type
+        """关闭当前内容块. For thinking blocks, emits signature_delta before closing."""
+        nonlocal current_block_type, current_thinking_signature
         if current_block_type is None:
             return None
-        event = _sse_event(
+
+        events = b""
+
+        # Emit signature_delta before closing thinking block (Anthropic SDK expects this)
+        if current_block_type == "thinking" and current_thinking_signature:
+            events += _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": current_block_index,
+                    "delta": {"type": "signature_delta", "signature": current_thinking_signature},
+                },
+            )
+
+        events += _sse_event(
             "content_block_stop",
             {"type": "content_block_stop", "index": current_block_index},
         )
         current_block_type = None
-        return event
+        current_thinking_signature = None
+        return events
 
     # 处理流式数据
     try:
@@ -1710,9 +1750,8 @@ async def gemini_stream_to_anthropic_stream(
                         current_block_type = "thinking"
                         current_thinking_signature = thoughtsignature
 
+                        # Anthropic format: signature is delivered via signature_delta, not on block start
                         block: Dict[str, Any] = {"type": "thinking", "thinking": ""}
-                        if thoughtsignature:
-                            block["thoughtSignature"] = thoughtsignature
                         yield _sse_event(
                             "content_block_start",
                             {
@@ -1732,8 +1771,6 @@ async def gemini_stream_to_anthropic_stream(
                         current_thinking_signature = thoughtsignature
                         
                         block_new: Dict[str, Any] = {"type": "thinking", "thinking": ""}
-                        if thoughtsignature:
-                            block_new["thoughtSignature"] = thoughtsignature
                         
                         yield _sse_event(
                             "content_block_start",
@@ -1803,7 +1840,9 @@ async def gemini_stream_to_anthropic_stream(
 
                     log.info(f"[SIGNATURE_TRACE] RESPONSE functionCall: id={original_id[:30]}..., has_sig={thoughtsignature is not None}, sig_len={len(thoughtsignature) if thoughtsignature else 0}")
 
-                    tool_id = encode_tool_id_with_signature(original_id, thoughtsignature)
+                    # Emit clean tool ID without signature encoding.
+                    # Signatures flow via signature_delta on thinking blocks
+                    # and are cached server-side for round-trip restoration.
                     tool_name = fc.get("name") or ""
                     tool_args = _remove_nulls_for_tool_input(fc.get("args", {}) or {})
 
@@ -1821,7 +1860,7 @@ async def gemini_stream_to_anthropic_stream(
                     if _anthropic_debug_enabled():
                         log.info(
                             f"[ANTHROPIC][tool_use] 处理工具调用: name={tool_name}, "
-                            f"id={tool_id}, has_signature={thoughtsignature is not None}"
+                            f"id={original_id}, has_signature={thoughtsignature is not None}"
                         )
 
                     current_block_index += 1
@@ -1834,7 +1873,7 @@ async def gemini_stream_to_anthropic_stream(
                             "index": current_block_index,
                             "content_block": {
                                 "type": "tool_use",
-                                "id": tool_id,
+                                "id": original_id,
                                 "name": tool_name,
                                 "input": {},
                             },
