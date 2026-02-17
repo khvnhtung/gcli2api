@@ -7,12 +7,12 @@ from typing import Any, Optional
 
 from config import (
     get_image_offload_cache_size,
-    get_image_offload_model,
     get_image_offload_timeout_seconds,
 )
 from log import log
+from src.api.antigravity import non_stream_request as antigravity_non_stream
 from src.api.geminicli import non_stream_request as geminicli_non_stream
-from src.utils import DEFAULT_SAFETY_SETTINGS, apply_model_alias
+from src.utils import DEFAULT_SAFETY_SETTINGS
 
 
 _PROMPT = (
@@ -20,9 +20,88 @@ _PROMPT = (
     "Include only salient visual information. No markdown, no bullets, no speculation."
 )
 
+_MAX_CONTEXT_CHARS = 320
+
 _cache_lock = asyncio.Lock()
 _cache: "OrderedDict[str, str]" = OrderedDict()
 _inflight: dict[str, asyncio.Task] = {}
+
+
+def _normalize_space(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _truncate(text: str, limit: int) -> str:
+    compact = _normalize_space(text)
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
+
+
+def _extract_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text)
+
+    return "\n".join(parts)
+
+
+def _build_context_hint(messages: list[Any], current_index: int) -> str:
+    """
+    Build compact context for image replacement text.
+
+    Includes current message text and nearest previous user/assistant texts.
+    """
+    if current_index < 0 or current_index >= len(messages):
+        return ""
+
+    current = messages[current_index]
+    current_text = ""
+    if isinstance(current, dict):
+        current_text = _extract_text_from_content(current.get("content"))
+
+    prev_user = ""
+    prev_assistant = ""
+
+    for idx in range(current_index - 1, -1, -1):
+        message = messages[idx]
+        if not isinstance(message, dict):
+            continue
+
+        role = str(message.get("role") or "")
+        text = _extract_text_from_content(message.get("content"))
+        if not text.strip():
+            continue
+
+        if role == "user" and not prev_user:
+            prev_user = text
+        elif role in ("assistant", "model") and not prev_assistant:
+            prev_assistant = text
+
+        if prev_user and prev_assistant:
+            break
+
+    segments: list[str] = []
+    if current_text.strip():
+        segments.append(f"request={_truncate(current_text, _MAX_CONTEXT_CHARS)}")
+    if prev_user.strip():
+        segments.append(f"prev_user={_truncate(prev_user, _MAX_CONTEXT_CHARS)}")
+    if prev_assistant.strip():
+        segments.append(f"prev_assistant={_truncate(prev_assistant, _MAX_CONTEXT_CHARS)}")
+
+    return " | ".join(segments)
 
 
 def _extract_caption_from_response(resp_obj: dict[str, Any]) -> str:
@@ -60,60 +139,74 @@ async def _trim_cache_if_needed() -> None:
 
 
 async def _describe_image(media_type: str, data_b64: str) -> Optional[str]:
-    model = apply_model_alias(await get_image_offload_model(), mode="geminicli")
     timeout_s = await get_image_offload_timeout_seconds()
 
-    body = {
-        "model": model,
-        "request": {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": _PROMPT},
-                        {
-                            "inlineData": {
-                                "mimeType": media_type,
-                                "data": data_b64,
-                            }
-                        },
-                    ],
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 160,
+    def _build_body(model_name: str) -> dict[str, Any]:
+        return {
+            "model": model_name,
+            "request": {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": _PROMPT},
+                            {
+                                "inlineData": {
+                                    "mimeType": media_type,
+                                    "data": data_b64,
+                                }
+                            },
+                        ],
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "maxOutputTokens": 160,
+                },
+                "safetySettings": DEFAULT_SAFETY_SETTINGS,
             },
-            "safetySettings": DEFAULT_SAFETY_SETTINGS,
-        },
-    }
+        }
 
-    try:
-        resp = await asyncio.wait_for(geminicli_non_stream(body=body), timeout=timeout_s)
-        body_text = ""
-        if hasattr(resp, "body"):
-            raw = resp.body
-            if isinstance(raw, (bytes, bytearray)):
-                body_text = raw.decode("utf-8", errors="ignore")
-            else:
-                body_text = str(raw)
-        elif hasattr(resp, "content"):
-            raw = resp.content
-            if isinstance(raw, (bytes, bytearray)):
-                body_text = raw.decode("utf-8", errors="ignore")
-            else:
-                body_text = str(raw)
-        else:
-            body_text = str(resp)
+    # Fixed fallback chain requested by user:
+    # 1) Antigravity gemini-3-flash
+    # 2) GeminiCLI gemini-2.5-flash
+    attempts = [
+        ("antigravity", antigravity_non_stream, "gemini-3-flash"),
+        ("geminicli", geminicli_non_stream, "gemini-2.5-flash"),
+    ]
 
-        resp_obj = json.loads(body_text)
-        caption = _extract_caption_from_response(resp_obj)
-        if not caption:
-            return None
-        return caption
-    except Exception as e:
-        log.warning(f"[IMAGE_OFFLOAD] Failed to describe image: {e}")
-        return None
+    for route_name, executor, model_name in attempts:
+        try:
+            resp = await asyncio.wait_for(executor(body=_build_body(model_name)), timeout=timeout_s)
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+
+            body_text = ""
+            if hasattr(resp, "body"):
+                raw = resp.body
+                if isinstance(raw, (bytes, bytearray)):
+                    body_text = raw.decode("utf-8", errors="ignore")
+                else:
+                    body_text = str(raw)
+            else:
+                body_text = str(resp)
+
+            if status_code and status_code >= 400:
+                log.warning(
+                    f"[IMAGE_OFFLOAD] {route_name} caption request failed "
+                    f"(model={model_name}, status={status_code})"
+                )
+                continue
+
+            resp_obj = json.loads(body_text)
+            caption = _extract_caption_from_response(resp_obj)
+            if caption:
+                return caption
+
+            log.warning(f"[IMAGE_OFFLOAD] {route_name} returned empty caption (model={model_name})")
+        except Exception as e:
+            log.warning(f"[IMAGE_OFFLOAD] {route_name} caption error (model={model_name}): {e}")
+
+    return None
 
 
 async def _get_caption_cached(media_type: str, data_b64: str) -> Optional[str]:
@@ -167,7 +260,7 @@ async def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     image_count = 0
     replaced_count = 0
 
-    for message in messages:
+    for msg_idx, message in enumerate(messages):
         if not isinstance(message, dict):
             new_messages.append(message)
             continue
@@ -176,6 +269,8 @@ async def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(content, list):
             new_messages.append(message)
             continue
+
+        context_hint = _build_context_hint(messages, msg_idx)
 
         new_content: list[Any] = []
         changed = False
@@ -199,7 +294,10 @@ async def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             image_count += 1
             caption = await _get_caption_cached(media_type, data_b64)
             if caption:
-                new_content.append({"type": "text", "text": f"[Image description: {caption}]"})
+                replacement = f"[Image description: {caption}]"
+                if context_hint:
+                    replacement += f" [Context: {context_hint}]"
+                new_content.append({"type": "text", "text": replacement})
                 replaced_count += 1
                 changed = True
             else:

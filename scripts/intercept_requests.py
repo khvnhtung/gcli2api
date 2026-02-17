@@ -27,43 +27,52 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def show_current_ua_strings():
     """Display all UA strings gcli2api currently generates."""
     from src.utils import (
-        ANTIGRAVITY_USER_AGENT,
-        GEMINICLI_USER_AGENT,
+        get_antigravity_user_agent,
+        get_geminicli_user_agent,
         FALLBACK_VERSION,
         _cached_antigravity_version,
+        _GEMINICLI_VERSION,
     )
 
     print("=" * 70)
     print("gcli2api User-Agent Audit")
     print("=" * 70)
 
+    antigravity_ua = get_antigravity_user_agent()
     print(f"\n--- Antigravity UA ---")
-    print(f"  String:   {ANTIGRAVITY_USER_AGENT}")
+    print(f"  String:   {antigravity_ua}")
     print(f"  Version:  {_cached_antigravity_version or FALLBACK_VERSION}")
     print(f"  Fallback: {FALLBACK_VERSION}")
     print(f"  Platform: {platform.system().lower()}/{platform.machine().lower()}")
 
-    print(f"\n--- GeminiCLI UA ---")
-    print(f"  String:   {GEMINICLI_USER_AGENT}")
+    print(f"\n--- GeminiCLI UA (dynamic, per-model) ---")
+    sample_models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview"]
+    for model in sample_models:
+        ua = get_geminicli_user_agent(model)
+        print(f"  {model}: {ua}")
+    print(f"  Version:  {_GEMINICLI_VERSION or '(not fetched yet)'}")
 
-    print(f"\n--- Expected (Real Antigravity Client) ---")
-    print(f"  Format:   antigravity/<version> <os>/<arch>")
-    print(f"  Example:  antigravity/1.107.0 linux/x64")
-    print(f"  Note:     Real client uses 'x64' not 'x86_64'")
+    print(f"\n--- Expected Formats ---")
+    print(f"  Antigravity: antigravity/<version> <os>/<arch>")
+    print(f"  Example:     antigravity/1.107.0 linux/x64")
+    print(f"  GeminiCLI:   GeminiCLI/<version>/<model> (<os>; <arch>)")
+    print(f"  Example:     GeminiCLI/0.28.2/gemini-2.5-flash (linux; x64)")
 
     # Check mismatches
     print(f"\n--- Mismatches ---")
     issues = []
 
-    version = _cached_antigravity_version or FALLBACK_VERSION
-    if version == FALLBACK_VERSION and _cached_antigravity_version is None:
-        issues.append(f"  [HIGH] Dynamic fetch failed, using fallback version {FALLBACK_VERSION}")
+    if _cached_antigravity_version is None:
+        issues.append(
+            f"  [HIGH] Antigravity dynamic fetch failed, using fallback {FALLBACK_VERSION}"
+        )
+    if _GEMINICLI_VERSION is None:
+        issues.append(
+            f"  [HIGH] GeminiCLI dynamic fetch failed, version not available"
+        )
 
-    if "x86_64" in ANTIGRAVITY_USER_AGENT:
+    if "x86_64" in antigravity_ua:
         issues.append(f"  [MED]  Arch 'x86_64' should be 'x64' (real client uses 'x64')")
-
-    if "Windows" in GEMINICLI_USER_AGENT and platform.system() != "Windows":
-        issues.append(f"  [MED]  GeminiCLI UA claims Windows but running on {platform.system()}")
 
     if not issues:
         print("  None detected!")

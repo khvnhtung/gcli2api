@@ -43,7 +43,7 @@ from src.api.utils import (
     record_api_call_error,
     parse_and_log_cooldown,
 )
-from src.utils import GEMINICLI_USER_AGENT
+from src.utils import GEMINICLI_USER_AGENT, get_geminicli_user_agent
 
 from src.audit_log import set_audit_context, increment_audit_attempt
 
@@ -99,7 +99,7 @@ async def prepare_request_headers_and_payload(
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "User-Agent": GEMINICLI_USER_AGENT,
+        "User-Agent": get_geminicli_user_agent(payload.get("model", "")),
     }
     project_id = credential_data.get("project_id", "")
     if not project_id:

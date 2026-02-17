@@ -12,9 +12,80 @@ from log import log
 # HTTP Bearer security scheme
 security = HTTPBearer()
 
+# ====================== Shared Constants ======================
+
+# Arch mapping: Python platform.machine() → Electron/Node.js-style arch string
+# Used by both Antigravity and GeminiCLI UA construction
+_ARCH_MAP = {
+    "x86_64": "x64",
+    "amd64": "x64",
+    "aarch64": "arm64",
+}
+
 # ====================== OAuth Configuration ======================
 
-GEMINICLI_USER_AGENT = os.getenv("GEMINICLI_USER_AGENT", "GeminiCLI/0.1.5 (Windows; AMD64)")
+# GeminiCLI User-Agent
+# Real format: GeminiCLI/<version>/<model> (<platform>; <arch>)
+# e.g. GeminiCLI/0.28.2/gemini-2.5-flash (linux; x64)
+# Version is fetched from npm registry at startup; model is added per-request.
+_GEMINICLI_VERSION: Optional[str] = None
+
+
+def _fetch_geminicli_version() -> str:
+    """Fetch latest GeminiCLI version from npm registry."""
+    global _GEMINICLI_VERSION
+    if _GEMINICLI_VERSION:
+        return _GEMINICLI_VERSION
+
+    fallback = "0.28.2"
+    try:
+        import requests
+        resp = requests.get(
+            "https://registry.npmjs.org/@google/gemini-cli/latest",
+            timeout=5,
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code == 200:
+            version = resp.json().get("version")
+            if version:
+                _GEMINICLI_VERSION = version
+                log.info(f"Fetched GeminiCLI version {version} from npm")
+                return version
+    except Exception as e:
+        log.debug(f"Failed to fetch GeminiCLI version from npm: {e}")
+
+    log.warning(f"Using fallback GeminiCLI version: {fallback}")
+    _GEMINICLI_VERSION = fallback
+    return fallback
+
+
+def _get_node_platform_arch() -> tuple:
+    """Get platform/arch strings matching Node.js process.platform / process.arch."""
+    os_name = platform.system().lower()
+    arch = platform.machine().lower()
+    # Node.js uses 'x64' not 'x86_64', 'arm64' not 'aarch64'
+    arch = _ARCH_MAP.get(arch, arch)
+    return os_name, arch
+
+
+def get_geminicli_user_agent(model: str = "") -> str:
+    """Build GeminiCLI User-Agent string.
+
+    Format: GeminiCLI/<version>/<model> (<platform>; <arch>)
+    Example: GeminiCLI/0.28.2/gemini-2.5-flash (linux; x64)
+    """
+    env_override = os.getenv("GEMINICLI_USER_AGENT")
+    if env_override:
+        return env_override
+
+    version = _fetch_geminicli_version()
+    os_name, arch = _get_node_platform_arch()
+    model_part = f"/{model}" if model else ""
+    return f"GeminiCLI/{version}{model_part} ({os_name}; {arch})"
+
+
+# Static default for non-API uses (auth, web panel verification)
+GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
 # ====================== Dynamic Antigravity Version ======================
 # Google-side Antigravity endpoints enforce a minimum client version.
@@ -28,6 +99,14 @@ _UPDATER_PLATFORM_MAP = {
     ("linux", "aarch64"): "linux-arm64",
     ("darwin", "x86_64"): "darwin-x64",
     ("darwin", "arm64"): "darwin-arm64",
+}
+
+# Arch mapping: Python platform.machine() → Electron/Node.js-style arch string
+# Used by both Antigravity and GeminiCLI UA construction
+_ARCH_MAP = {
+    "x86_64": "x64",
+    "amd64": "x64",
+    "aarch64": "arm64",
 }
 
 VERSION_BASE_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
@@ -85,15 +164,6 @@ def _fetch_antigravity_version() -> str:
     log.warning(f"Using fallback Antigravity version: {FALLBACK_VERSION}")
     _cached_antigravity_version = FALLBACK_VERSION
     return FALLBACK_VERSION
-
-
-# Arch mapping: Python platform.machine() → Antigravity UA arch string
-# Real client uses Electron-style arch names: x64, arm64
-_ARCH_MAP = {
-    "x86_64": "x64",
-    "amd64": "x64",
-    "aarch64": "arm64",
-}
 
 
 def get_antigravity_user_agent() -> str:
