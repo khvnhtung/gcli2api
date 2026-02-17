@@ -30,7 +30,8 @@ def parse_response_for_fake_stream(response_data: Dict[str, Any]) -> tuple:
         response_data: Gemini API 响应数据
 
     Returns:
-        (content, reasoning_content, finish_reason, images): 内容、推理内容、结束原因和图片数据的元组
+        (content, reasoning_content, finish_reason, images, thinking_signature):
+        内容、推理内容、结束原因、图片数据和思考签名的元组
     """
     import json
 
@@ -42,16 +43,27 @@ def parse_response_for_fake_stream(response_data: Dict[str, Any]) -> tuple:
     candidates = response_data.get("candidates", [])
     log.debug(f"[FAKE_STREAM] Found {len(candidates)} candidates")
     if not candidates:
-        return "", "", "STOP", []
+        return "", "", "STOP", [], None
 
     candidate = candidates[0]
     finish_reason = candidate.get("finishReason", "STOP")
     parts = safe_get_nested(candidate, "content", "parts", default=[])
     log.debug(f"[FAKE_STREAM] Extracted {len(parts)} parts: {json.dumps(parts, ensure_ascii=False)}")
     content, reasoning_content, images = extract_content_and_reasoning(parts)
-    log.debug(f"[FAKE_STREAM] Content length: {len(content)}, Reasoning length: {len(reasoning_content)}, Images count: {len(images)}")
 
-    return content, reasoning_content, finish_reason, images
+    # Extract the last thoughtSignature from thought parts for signature round-trip.
+    # In fake-streamed responses, all thinking is emitted as a single block,
+    # so we use the last signature encountered.
+    thinking_signature = None
+    for part in parts:
+        if part.get("thought", False):
+            sig = part.get("thoughtSignature")
+            if sig:
+                thinking_signature = sig
+
+    log.debug(f"[FAKE_STREAM] Content length: {len(content)}, Reasoning length: {len(reasoning_content)}, Images count: {len(images)}, has_signature: {thinking_signature is not None}")
+
+    return content, reasoning_content, finish_reason, images, thinking_signature
 
 def extract_fake_stream_content(response: Any) -> Tuple[str, str, Dict[str, int]]:
     """
@@ -371,7 +383,7 @@ def format_sse(chunk: Dict[str, Any]) -> bytes:
     return f"event: {event_type}\ndata: {payload}\n\n".encode("utf-8")
 
 
-def build_anthropic_fake_stream_chunks(content: str, reasoning_content: str, finish_reason: str, model: str, images: List[Dict[str, Any]] = None, chunk_size: int = 50) -> List[Dict[str, Any]]:
+def build_anthropic_fake_stream_chunks(content: str, reasoning_content: str, finish_reason: str, model: str, images: List[Dict[str, Any]] = None, chunk_size: int = 50, thinking_signature: str = None) -> List[Dict[str, Any]]:
     """构建 Anthropic 格式的假流式响应数据块
 
     Args:
@@ -381,6 +393,7 @@ def build_anthropic_fake_stream_chunks(content: str, reasoning_content: str, fin
         model: 模型名称
         images: 图片数据列表（可选）
         chunk_size: 每个chunk的字符数（默认50）
+        thinking_signature: 思考签名（可选），用于 signature_delta 事件
 
     Returns:
         Anthropic SSE 格式的响应数据块列表
@@ -472,6 +485,14 @@ def build_anthropic_fake_stream_chunks(content: str, reasoning_content: str, fin
                 "type": "content_block_delta",
                 "index": block_index,
                 "delta": {"type": "thinking_delta", "thinking": chunk_text}
+            })
+
+        # Emit signature_delta before closing thinking block (AI SDK expects this)
+        if thinking_signature:
+            chunks.append({
+                "type": "content_block_delta",
+                "index": block_index,
+                "delta": {"type": "signature_delta", "signature": thinking_signature}
             })
 
         # thinking content_block_stop

@@ -56,6 +56,7 @@ def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
         try:
             wait_s = max(1, int(math.ceil(float(earliest) - time.time())))
             headers_out["Retry-After"] = str(wait_s)
+            headers_out["retry-after-ms"] = str(wait_s * 1000)
         except Exception:
             pass
     return Response(

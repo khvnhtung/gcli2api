@@ -256,6 +256,7 @@ async def messages(
                         try:
                             wait_s = max(1, int(math.ceil(float(earliest) - time.time())))
                             headers_out["Retry-After"] = str(wait_s)
+                            headers_out["retry-after-ms"] = str(wait_s * 1000)
                         except Exception:
                             pass
 
@@ -508,14 +509,14 @@ async def messages(
                 return
 
             # 使用统一的解析函数
-            content, reasoning_content, finish_reason, images = parse_response_for_fake_stream(gemini_response)
+            content, reasoning_content, finish_reason, images, thinking_signature = parse_response_for_fake_stream(gemini_response)
 
             log.debug(f"Anthropic extracted content: {content}")
             log.debug(f"Anthropic extracted reasoning: {reasoning_content[:100] if reasoning_content else 'None'}...")
             log.debug(f"Anthropic extracted images count: {len(images)}")
 
             # 构建响应块
-            chunks = build_anthropic_fake_stream_chunks(content, reasoning_content, finish_reason, real_model, images)
+            chunks = build_anthropic_fake_stream_chunks(content, reasoning_content, finish_reason, real_model, images, thinking_signature=thinking_signature)
             for idx, chunk in enumerate(chunks):
                 log.debug(f"[FAKE_STREAM] Yielding chunk #{idx+1}: {json.dumps(chunk)[:200]}")
                 yield format_sse(chunk)

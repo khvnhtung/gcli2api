@@ -244,14 +244,14 @@ async def messages(
                 return
 
             # 使用统一的解析函数
-            content, reasoning_content, finish_reason, images = parse_response_for_fake_stream(gemini_response)
+            content, reasoning_content, finish_reason, images, thinking_signature = parse_response_for_fake_stream(gemini_response)
 
             log.debug(f"Anthropic extracted content: {content}")
             log.debug(f"Anthropic extracted reasoning: {reasoning_content[:100] if reasoning_content else 'None'}...")
             log.debug(f"Anthropic extracted images count: {len(images)}")
 
             # 构建响应块
-            chunks = build_anthropic_fake_stream_chunks(content, reasoning_content, finish_reason, real_model, images)
+            chunks = build_anthropic_fake_stream_chunks(content, reasoning_content, finish_reason, real_model, images, thinking_signature=thinking_signature)
             for idx, chunk in enumerate(chunks):
                 chunk_json = json.dumps(chunk)
                 log.debug(f"[FAKE_STREAM] Yielding chunk #{idx+1}: {chunk_json[:200]}")
@@ -327,19 +327,85 @@ async def messages(
             async for chunk in stream_gen:
                 # 检查是否是Response对象（错误情况）
                 if isinstance(chunk, Response):
-                    # 错误响应，不进行转换，直接传递
-                    error_content = chunk.body if isinstance(chunk.body, bytes) else chunk.body.encode('utf-8')
+                    # 错误响应，转换为 Anthropic 格式
+                    raw_body = getattr(chunk, "body", b"")
+                    if isinstance(raw_body, memoryview):
+                        raw_body = raw_body.tobytes()
+                    if isinstance(raw_body, bytes):
+                        error_content = raw_body
+                    else:
+                        error_content = str(raw_body).encode("utf-8")
                     try:
                         gemini_error = json.loads(error_content.decode('utf-8'))
-                        from src.converter.anthropic2gemini import gemini_to_anthropic_response
-                        anthropic_error = gemini_to_anthropic_response(
-                            gemini_error,
-                            real_model,
-                            chunk.status_code
-                        )
-                        yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
-                    except Exception:
-                        yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
+
+                        # Extract the actual error message (compatible with multiple error structures)
+                        error_message = "Unknown error"
+                        error_type = "api_error"
+
+                        if isinstance(gemini_error, dict) and "error" in gemini_error:
+                            err = gemini_error.get("error")
+                            if isinstance(err, dict):
+                                raw_message = err.get("message", "")
+                                # Try to parse nested JSON error messages
+                                try:
+                                    nested_error = json.loads(raw_message)
+                                    if isinstance(nested_error, dict) and "error" in nested_error:
+                                        nested = nested_error.get("error") or {}
+                                        if isinstance(nested, dict):
+                                            error_message = nested.get("message", raw_message) or raw_message
+                                            error_type = nested.get("type", "api_error")
+                                        else:
+                                            error_message = raw_message
+                                    else:
+                                        error_message = raw_message
+                                except (json.JSONDecodeError, TypeError):
+                                    error_message = raw_message
+                            elif isinstance(err, str):
+                                error_message = err
+                            elif err is not None:
+                                error_message = str(err)
+
+                            # Attach details snapshot if present
+                            details = gemini_error.get("details")
+                            if isinstance(details, dict):
+                                enabled = details.get("enabled")
+                                available = details.get("available")
+                                earliest = details.get("earliest_model_cooldown_until")
+                                if enabled is not None or available is not None or earliest is not None:
+                                    extra = {
+                                        "enabled": enabled,
+                                        "available": available,
+                                        "earliest_model_cooldown_until": earliest,
+                                    }
+                                    error_message = f"{error_message} | details={json.dumps(extra, ensure_ascii=False)}"
+                        elif isinstance(gemini_error, dict) and "message" in gemini_error:
+                            error_message = str(gemini_error.get("message") or "Unknown error")
+                        else:
+                            error_message = error_content.decode('utf-8', errors='ignore')
+
+                        # Normalize context overflow errors for OpenCode compatibility.
+                        # OpenCode matches: /prompt is too long/i, /exceeds the context window/i
+                        if "too long" in error_message.lower() or "exceeds" in error_message.lower():
+                            error_message = (
+                                f"{error_message}. "
+                                "Suggestion: 1) Use /compact to reduce context "
+                                "2) Start a new conversation "
+                                "3) Use a model with larger context (gemini-3-pro-high)"
+                            )
+
+                        # Build Anthropic-format error response
+                        anthropic_error = {
+                            "type": "error",
+                            "error": {
+                                "type": error_type,
+                                "message": error_message,
+                            },
+                        }
+
+                        yield f"data: {json.dumps(anthropic_error, ensure_ascii=False)}\n\n".encode('utf-8')
+                    except Exception as e:
+                        log.error(f"Error parsing error response: {e}")
+                        yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}}, ensure_ascii=False)}\n\n".encode('utf-8')
                     return
                 else:
                     # 确保是bytes类型

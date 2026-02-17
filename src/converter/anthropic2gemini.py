@@ -1961,7 +1961,7 @@ async def gemini_stream_to_anthropic_stream(
                         "content": [],
                         "stop_reason": None,
                         "stop_sequence": None,
-                        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                        "usage": {"input_tokens": scale_usage_tokens(input_tokens, output_tokens, model)[0], "output_tokens": output_tokens},
                     },
                 },
             )
