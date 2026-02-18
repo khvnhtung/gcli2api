@@ -259,6 +259,31 @@ return create_error_response("Not found", status_code=404)
 
 7. **Search Handling on Antigravity**: `gemini-2.5-flash` supports native search. For `gemini-3*`, behavior is client-aware in `src/router/antigravity/anthropic.py`: OpenCode user agents (`opencode/...`) have `web_search` stripped to keep Antigravity routing stable, while non-OpenCode clients are rerouted to GeminiCLI Anthropic route where search works. Claude models are intercepted earlier by `web_search_handler.py`.
 
+8. **Credential Tier Routing (Current Policy)**:
+   - Antigravity `claude-*` uses ultra credentials only.
+   - Antigravity `gemini-*` uses non-ultra credentials only.
+   - Utility offload to Z.AI is allowlist-based; non-offloaded requests stay on Google path.
+   - Search requests (`-search` suffix or `web_search` tool) stay on Google path and are not offloaded to Z.AI.
+
+9. **Post-change Verification Checklist** (after routing/offload changes):
+   - Restart service: `systemctl --user restart gcli2api`
+   - Verify service health: `systemctl --user status gcli2api --no-pager -n 20`
+   - Send at least one utility request and one search request.
+   - Confirm routing in audit:
+     ```bash
+     sqlite3 -header -column ./creds/credentials.db "SELECT datetime(ts,'unixepoch') AS ts_utc, model_requested, model_effective, route_provider, route_policy, http_status FROM request_audit ORDER BY id DESC LIMIT 20;"
+     ```
+   - Confirm no tier violations:
+     ```bash
+     sqlite3 -header -column ./creds/credentials.db "WITH b AS (SELECT ra.model_requested, COALESCE(ac.is_ultra,0) AS is_ultra FROM request_audit ra LEFT JOIN antigravity_credentials ac ON ac.filename=ra.credential_filename WHERE ra.mode='antigravity' AND ra.ts >= strftime('%s','now') - 3600) SELECT SUM(CASE WHEN model_requested LIKE 'claude-%' AND is_ultra=0 THEN 1 ELSE 0 END) AS claude_on_non_ultra, SUM(CASE WHEN model_requested LIKE 'gemini-%' AND is_ultra=1 THEN 1 ELSE 0 END) AS gemini_on_ultra FROM b;"
+     ```
+
+10. **Audit Fields for Incident Postmortem**:
+    - Routing lineage: `route_provider`, `route_policy`, `route_reason`
+    - Failover trace: `fallback_used`, `fallback_detail`
+    - Request class: `request_pattern`
+    - Route aggregate table: `usage_hourly_route`
+
 ## Debugging Guide
 
 ### Terminology
@@ -313,9 +338,10 @@ Check if thinking budget is being set correctly:
 journalctl --user -u gcli2api --no-pager -n 100 | grep -E "thinking.*budget|thinkingBudget"
 ```
 
-**Important**: Gemini API requires minimum `budget_tokens: 1024`. If client sends lower value, gcli2api auto-corrects:
-- `budget_tokens < 1024` → Automatically increased to 1024
-- Log shows: `[ANTHROPIC2GEMINI] budget_tokens X below minimum 1024, using 1024`
+**Important**: Thinking budget is model-aware.
+- Claude thinking models on Antigravity enforce minimum `budget_tokens: 1024`.
+- Gemini models allow lower budgets (model-dependent minimums).
+- Only Claude-path requests are auto-corrected upward to 1024 when needed.
 
 ### Common Issues and Solutions
 
@@ -584,6 +610,7 @@ Auditable record of every design decision made when building the Antigravity pro
 | gemini-2.5-flash | 1024 | N/A | |
 | gemini-2.5-pro | 1024 | 128 | |
 | claude-sonnet-4-5-thinking | 1024 | N/A | Antigravity enforces 1024 minimum |
+| claude-sonnet-4-6 | N/A | N/A | Non-thinking model (no -thinking variant upstream) |
 | claude-opus-4-6-thinking | 1024 | N/A | Antigravity enforces 1024 minimum |
 
 Key: `thinkingBudget: -1` means dynamic/always-on thinking. Server decides budget. Client should omit `thinkingBudget` or set `includeThoughts: true` without budget.
@@ -634,6 +661,7 @@ Key: `thinkingBudget: -1` means dynamic/always-on thinking. Server decides budge
 | Gemini-3 + OpenCode UA: strip `web_search` silently | WORKAROUND | `src/router/antigravity/anthropic.py:317-325` | Keep OpenCode on Antigravity path |
 | Gemini-3 + non-OpenCode UA: reroute to GeminiCLI | WORKAROUND | `src/router/antigravity/anthropic.py:308-346` | Search works on GeminiCLI endpoint |
 | Claude + `web_search`: intercept, use Gemini as search executor | WORKAROUND | `src/router/antigravity/anthropic.py:286-295` | Claude on Antigravity can't do googleSearch |
+| Z.AI offload skips search requests (`-search` and `web_search`) | WORKAROUND | `src/offload_zai.py:_is_search_request()` | Keeps grounded search behavior on Google path |
 
 ### Credential / Auth
 
@@ -641,6 +669,7 @@ Key: `thinkingBudget: -1` means dynamic/always-on thinking. Server decides budge
 |----------|------|----------|-------|
 | Same OAuth Client IDs as official clients | REPLICATION | `src/utils.py:92-93` | Required for valid tokens |
 | Default endpoint: `daily-cloudcode-pa.sandbox.googleapis.com` | REPLICATION | `config.py:716,730` | Least restrictive endpoint |
+| Antigravity credential tier routing: Claude→ultra, Gemini→non-ultra | CUSTOM | `src/storage/sqlite_manager.py:_resolve_ultra_requirement()` | Prevents Gemini traffic from consuming ultra pool |
 
 ### Transport (HTTP/2)
 
