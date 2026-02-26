@@ -39,7 +39,8 @@ class SQLiteManager:
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
-            ("updated_at", "REAL DEFAULT (unixepoch())")
+            ("updated_at", "REAL DEFAULT (unixepoch())"),
+            ("is_ultra", "INTEGER DEFAULT 0"),
         ],
         "antigravity_credentials": [
             ("disabled", "INTEGER DEFAULT 0"),
@@ -176,7 +177,8 @@ class SQLiteManager:
 
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
-                updated_at REAL DEFAULT (unixepoch())
+                updated_at REAL DEFAULT (unixepoch()),
+                is_ultra INTEGER DEFAULT 0
             )
         """)
 
@@ -202,7 +204,8 @@ class SQLiteManager:
 
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
-                updated_at REAL DEFAULT (unixepoch())
+                updated_at REAL DEFAULT (unixepoch()),
+                is_ultra INTEGER DEFAULT 0
             )
         """)
 
@@ -279,6 +282,33 @@ class SQLiteManager:
         else:
             raise ValueError(f"Invalid mode: {mode}. Must be 'geminicli' or 'antigravity'")
 
+    def _resolve_ultra_requirement(
+        self,
+        *,
+        mode: str,
+        model_key: Optional[str],
+        require_ultra: Optional[bool],
+    ) -> Optional[bool]:
+        """Resolve ultra-tier filtering for credential selection/snapshots.
+
+        Rules:
+        - Antigravity Claude models must use ultra accounts.
+        - Antigravity Gemini models must avoid ultra accounts.
+        - Other models follow explicit require_ultra if provided, else no ultra filter.
+        """
+        if require_ultra is not None:
+            return require_ultra
+
+        if mode != "antigravity" or not model_key:
+            return None
+
+        key = str(model_key)
+        if key.startswith("claude-"):
+            return True
+        if key.startswith("gemini-"):
+            return False
+        return None
+
     # ============ SQL 方法 ============
 
     async def get_next_available_credential(
@@ -313,14 +343,17 @@ class SQLiteManager:
                 where_sql = "WHERE disabled = 0"
                 params: List[Any] = []
 
-                # Auto-detect: Claude models on antigravity require ultra accounts
-                effective_ultra = require_ultra
-                if effective_ultra is None and mode == "antigravity" and model_key:
-                    if model_key.startswith("claude-"):
-                        effective_ultra = True
+                # Auto-detect ultra filtering by model family.
+                effective_ultra = self._resolve_ultra_requirement(
+                    mode=mode,
+                    model_key=model_key,
+                    require_ultra=require_ultra,
+                )
 
                 if effective_ultra is True:
                     where_sql += " AND is_ultra = 1"
+                elif effective_ultra is False:
+                    where_sql += " AND is_ultra = 0"
 
                 if exclude_filenames:
                     placeholders = ",".join(["?"] * len(exclude_filenames))
@@ -402,10 +435,26 @@ class SQLiteManager:
             async with aiosqlite.connect(self._db_path) as db:
                 where_sql = ""
                 params: List[Any] = []
+
+                effective_ultra = self._resolve_ultra_requirement(
+                    mode=mode,
+                    model_key=model_key,
+                    require_ultra=None,
+                )
+
+                clauses: List[str] = []
+                if effective_ultra is True:
+                    clauses.append("is_ultra = 1")
+                elif effective_ultra is False:
+                    clauses.append("is_ultra = 0")
+
                 if exclude_filenames:
                     placeholders = ",".join(["?"] * len(exclude_filenames))
-                    where_sql = f"WHERE filename NOT IN ({placeholders})"
+                    clauses.append(f"filename NOT IN ({placeholders})")
                     params.extend(exclude_filenames)
+
+                if clauses:
+                    where_sql = "WHERE " + " AND ".join(clauses)
 
                 async with db.execute(
                     f"""
