@@ -10,6 +10,474 @@ from src.utils import DEFAULT_SAFETY_SETTINGS
 
 # ==================== Gemini API 配置 ====================
 
+# ====================== Model Configuration ======================
+
+# Default Safety Settings for Google API
+DEFAULT_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_IMAGE_HATE", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_IMAGE_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_JAILBREAK", "threshold": "BLOCK_NONE"},
+]
+
+LITE_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+]
+
+def _append_schema_hint(schema: Dict[str, Any], hint: str) -> None:
+    """Move fragile validation details into description instead of sending them raw."""
+    if not hint:
+        return
+    desc = schema.get("description")
+    schema["description"] = f"{desc} ({hint})" if desc else hint
+
+
+def _resolve_schema_ref(ref: str, root_schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+
+    node: Any = root_schema
+    for part in ref[2:].split("/"):
+        part = part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+
+    return node if isinstance(node, dict) else None
+
+
+def _clean_parameters_json_schema(
+    schema: Any,
+    root_schema: Optional[Dict[str, Any]] = None,
+    visited: Optional[set] = None,
+) -> Any:
+    """Clean a tool schema for Code Assist's parametersJsonSchema field."""
+    if isinstance(schema, list):
+        return [_clean_parameters_json_schema(item, root_schema, visited) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    if root_schema is None:
+        root_schema = schema
+    if visited is None:
+        visited = set()
+
+    schema_id = id(schema)
+    if schema_id in visited:
+        return {"type": "object", "description": "circular reference"}
+    visited.add(schema_id)
+
+    ref_key = "$ref" if "$ref" in schema else ("ref" if "ref" in schema else None)
+    if ref_key:
+        resolved = _resolve_schema_ref(schema[ref_key], root_schema)
+        if resolved:
+            merged = dict(resolved)
+            for key in ("description", "default"):
+                if key in schema:
+                    merged[key] = schema[key]
+            schema = merged
+
+    if "allOf" in schema:
+        result: Dict[str, Any] = {}
+        for item in schema.get("allOf") or []:
+            cleaned_item = _clean_parameters_json_schema(item, root_schema, visited)
+            if not isinstance(cleaned_item, dict):
+                continue
+            if "properties" in cleaned_item:
+                result.setdefault("properties", {}).update(cleaned_item["properties"])
+            if "required" in cleaned_item:
+                result.setdefault("required", []).extend(cleaned_item["required"])
+            for key, value in cleaned_item.items():
+                if key not in ("properties", "required"):
+                    result[key] = value
+        for key, value in schema.items():
+            if key not in ("allOf", "properties", "required"):
+                result[key] = value
+            elif key in ("properties", "required") and key not in result:
+                result[key] = value
+    else:
+        result = dict(schema)
+
+    if result.get("nullable") is True:
+        _append_schema_hint(result, "nullable")
+
+    if "type" in result:
+        type_value = result["type"]
+        if isinstance(type_value, list):
+            non_null_types = [
+                str(t).lower()
+                for t in type_value
+                if isinstance(t, str) and t.lower() != "null"
+            ]
+            if non_null_types:
+                result["type"] = non_null_types[0]
+                if any(str(t).lower() == "null" for t in type_value):
+                    _append_schema_hint(result, "nullable")
+            else:
+                result["type"] = "string"
+        elif isinstance(type_value, str):
+            lower_type = type_value.lower()
+            if lower_type in {"string", "number", "integer", "boolean", "array", "object"}:
+                result["type"] = lower_type
+            elif lower_type == "null":
+                result["type"] = "string"
+                _append_schema_hint(result, "nullable")
+            else:
+                result.pop("type", None)
+
+    if "anyOf" in result or "oneOf" in result:
+        union_key = "anyOf" if "anyOf" in result else "oneOf"
+        union_items = result.get(union_key) or []
+        cleaned_items = [
+            item for item in (
+                _clean_parameters_json_schema(item, root_schema, visited)
+                for item in union_items
+            )
+            if isinstance(item, dict)
+        ]
+        enum_values = [
+            item.get("const")
+            for item in union_items
+            if isinstance(item, dict) and item.get("const") not in ("", None)
+        ]
+        if enum_values and len(enum_values) == len(union_items):
+            result["type"] = "string"
+            result["enum"] = [str(v) for v in enum_values]
+        else:
+            preferred = next(
+                (
+                    item for item in cleaned_items
+                    if item.get("type") in ("object", "array") or item.get("properties")
+                ),
+                None,
+            )
+            if preferred is None:
+                preferred = next((item for item in cleaned_items if item.get("type") or item.get("enum")), None)
+            if preferred:
+                original_description = result.get("description")
+                result.update(preferred)
+                if original_description:
+                    _append_schema_hint(result, original_description)
+        result.pop("anyOf", None)
+        result.pop("oneOf", None)
+
+    if result.get("type") == "array":
+        items = result.get("items")
+        if isinstance(items, list):
+            if items:
+                result["items"] = _clean_parameters_json_schema(items[0], root_schema, visited)
+                _append_schema_hint(result, "tuple schema simplified")
+            else:
+                result.pop("items", None)
+        elif isinstance(items, dict):
+            result["items"] = _clean_parameters_json_schema(items, root_schema, visited)
+
+    validation_keys = {
+        "default", "minLength", "maxLength", "minimum", "maximum",
+        "minItems", "maxItems", "pattern", "format", "uniqueItems",
+    }
+    for key in list(result.keys()):
+        if key in validation_keys:
+            value = result.pop(key)
+            if value not in (None, "", {}, []):
+                _append_schema_hint(result, f"{key}: {json.dumps(value, ensure_ascii=False)}")
+
+    unsupported_keys = {
+        "title", "$schema", "$id", "$ref", "ref", "strict", "nullable",
+        "exclusiveMaximum", "exclusiveMinimum", "additionalProperties",
+        "allOf", "anyOf", "oneOf", "$defs", "definitions", "example",
+        "examples", "readOnly", "writeOnly", "const", "additionalItems",
+        "contains", "patternProperties", "dependencies", "propertyNames",
+        "if", "then", "else", "contentEncoding", "contentMediaType",
+    }
+    for key in list(result.keys()):
+        if key in unsupported_keys or key.startswith("x-"):
+            del result[key]
+
+    nullable_props = set()
+    if isinstance(result.get("properties"), dict):
+        cleaned_props = {}
+        for prop_name, prop_schema in result["properties"].items():
+            if isinstance(prop_schema, dict):
+                prop_type = prop_schema.get("type")
+                if (
+                    prop_schema.get("nullable") is True
+                    or (
+                        isinstance(prop_type, list)
+                        and any(str(t).lower() == "null" for t in prop_type)
+                    )
+                ):
+                    nullable_props.add(prop_name)
+            cleaned_props[prop_name] = _clean_parameters_json_schema(prop_schema, root_schema, visited)
+        result["properties"] = cleaned_props
+
+    if "properties" in result and "type" not in result:
+        result["type"] = "object"
+
+    if isinstance(result.get("required"), list):
+        prop_names = set(result.get("properties", {}).keys()) if isinstance(result.get("properties"), dict) else None
+        required = []
+        for item in result["required"]:
+            if not isinstance(item, str):
+                continue
+            if prop_names is not None and item not in prop_names:
+                continue
+            if item in nullable_props:
+                continue
+            if item not in required:
+                required.append(item)
+        if required:
+            result["required"] = required
+        else:
+            result.pop("required", None)
+
+    return result
+
+
+def _normalize_tools_for_internal_api(tools: Any) -> Any:
+    if not isinstance(tools, list):
+        return tools
+
+    normalized_tools = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            normalized_tools.append(tool)
+            continue
+
+        normalized_tool = tool.copy()
+        declarations = normalized_tool.get("functionDeclarations")
+        if declarations is None:
+            declarations = normalized_tool.get("function_declarations")
+        if isinstance(declarations, list):
+            normalized_declarations = []
+            for declaration in declarations:
+                if not isinstance(declaration, dict):
+                    normalized_declarations.append(declaration)
+                    continue
+
+                normalized_declaration = declaration.copy()
+                if "parametersJsonSchema" in normalized_declaration:
+                    schema = normalized_declaration["parametersJsonSchema"]
+                elif "parameters_json_schema" in normalized_declaration:
+                    schema = normalized_declaration.pop("parameters_json_schema", None)
+                else:
+                    schema = normalized_declaration.pop("parameters", None)
+
+                normalized_declaration.pop("parameters", None)
+                normalized_declaration.pop("parameters_json_schema", None)
+                if schema not in (None, {}, []):
+                    normalized_declaration["parametersJsonSchema"] = _clean_parameters_json_schema(schema)
+                else:
+                    normalized_declaration.pop("parametersJsonSchema", None)
+
+                normalized_declarations.append(normalized_declaration)
+
+            normalized_tool.pop("function_declarations", None)
+            normalized_tool["functionDeclarations"] = normalized_declarations
+
+        normalized_tools.append(normalized_tool)
+
+    return normalized_tools
+
+
+def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str, mode: str = "geminicli") -> Any:
+    if not isinstance(tools, list):
+        return tools
+
+    is_claude = "claude" in (model_name or "").lower()
+
+    if is_claude:
+        # Antigravity 外层 API 只接受 functionDeclarations。
+        # Claude 模型会把 parameters 转为 custom.input_schema；使用
+        # parametersJsonSchema 会使内部转换遗漏该字段并被上游拒绝。
+
+        normalized_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                normalized_tools.append(tool)
+                continue
+
+            normalized_tool = tool.copy()
+
+            schema = {"type": "object", "properties": {}}
+            name = ""
+            description = ""
+
+            # Extract schema from either format
+            custom_tool = normalized_tool.get("custom")
+            if isinstance(custom_tool, dict):
+                schema = custom_tool.get("input_schema") or custom_tool.get("inputSchema") or schema
+                name = custom_tool.get("name", "")
+                description = custom_tool.get("description", "")
+            else:
+                declarations = normalized_tool.get("functionDeclarations") or normalized_tool.get("function_declarations")
+                if isinstance(declarations, list) and declarations and isinstance(declarations[0], dict):
+                    decl = declarations[0]
+                    schema = (
+                        decl.get("parametersJsonSchema") or
+                        decl.get("parameters_json_schema") or
+                        decl.get("parameters") or schema
+                    )
+                    name = decl.get("name", "")
+                    description = decl.get("description", "")
+
+            normalized_tools.append({
+                "functionDeclarations": [{
+                    "name": name,
+                    "description": description,
+                    "parameters": schema
+                }]
+            })
+
+        return normalized_tools
+
+    # 对于 Gemini 模型：
+    # 后端需要标准的 functionDeclarations 格式。
+    # 并且，必须只能使用 "parameters" 字段，如果使用了 "parametersJsonSchema"，
+    # 会报 "parameters_json_schema must not be set when parameters is set" 等冲突错误
+    normalized_tools = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            normalized_tools.append(tool)
+            continue
+
+        normalized_tool = tool.copy()
+        
+        # 1. 如果包含 Anthropic 原生的 "custom" 工具格式，将其转换为 Gemini 的 functionDeclarations 格式
+        custom_tool = normalized_tool.get("custom")
+        if isinstance(custom_tool, dict):
+            schema = custom_tool.get("input_schema") or custom_tool.get("inputSchema")
+            if schema in (None, {}, []):
+                schema = {"type": "object", "properties": {}}
+            declaration = {
+                "name": custom_tool.get("name", ""),
+                "description": custom_tool.get("description", ""),
+                "parameters": schema
+            }
+            normalized_tools.append({
+                "functionDeclarations": [declaration]
+            })
+            continue
+
+        # 2. 如果包含标准的 functionDeclarations 格式，确保参数不为空且只使用 parameters 字段
+        declarations = normalized_tool.get("functionDeclarations") or normalized_tool.get("function_declarations")
+        if isinstance(declarations, list):
+            normalized_declarations = []
+            for declaration in declarations:
+                if not isinstance(declaration, dict):
+                    normalized_declarations.append(declaration)
+                    continue
+                
+                normalized_declaration = declaration.copy()
+                # 兼容不同字段格式并归一化到 parameters
+                schema = (
+                    normalized_declaration.get("parameters")
+                    or normalized_declaration.get("parametersJsonSchema")
+                    or normalized_declaration.get("parameters_json_schema")
+                )
+                
+                if schema in (None, {}, []):
+                    schema = {"type": "object", "properties": {}}
+                
+                # 只保留 parameters 字段，防止与 parametersJsonSchema 冲突
+                normalized_declaration["parameters"] = schema
+                normalized_declaration.pop("parametersJsonSchema", None)
+                normalized_declaration.pop("parameters_json_schema", None)
+                
+                normalized_declarations.append(normalized_declaration)
+                
+            normalized_tool.pop("function_declarations", None)
+            normalized_tool["functionDeclarations"] = normalized_declarations
+
+        normalized_tools.append(normalized_tool)
+
+    return normalized_tools
+
+
+def _should_skip_thought_signature(part: Dict[str, Any], model_name: str) -> bool:
+    if "claude" in (model_name or "").lower():
+        return False
+
+    return (
+        "functionCall" in part
+        or "function_call" in part
+        or part.get("thought") is True
+        or "thoughtSignature" in part
+        or "thought_signature" in part
+    )
+
+
+def _normalize_part_thought_signature(part: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    normalized = part.copy()
+    if _should_skip_thought_signature(normalized, model_name):
+        normalized.pop("thought_signature", None)
+        normalized["thoughtSignature"] = SKIP_THOUGHT_SIGNATURE_VALIDATOR
+    return normalized
+
+
+SUPPORTED_ASPECT_RATIOS = [
+    (1, 1), (2, 3), (3, 2), (3, 4), (4, 3),
+    (4, 5), (5, 4), (9, 16), (16, 9), (21, 9),
+]
+
+
+def _parse_size_to_image_config(size_str: str) -> Dict[str, str]:
+    """
+    解析用户传入的 size 参数为 Gemini imageConfig 参数
+
+    支持格式: "1024x1536", "1024*1536", "1024X1536"
+
+    Returns:
+        包含 aspectRatio 和/或 imageSize 的字典
+    """
+    import re
+
+    config = {}
+    size_str = size_str.strip()
+
+    match = re.match(r"^(\d+)\s*[xX*×]\s*(\d+)$", size_str)
+    if not match:
+        return config
+
+    width, height = int(match.group(1)), int(match.group(2))
+
+    if width <= 0 or height <= 0:
+        return config
+
+    # 计算最接近的支持宽高比
+    target_ratio = width / height
+    best_ratio = None
+    best_diff = float("inf")
+    for w, h in SUPPORTED_ASPECT_RATIOS:
+        diff = abs(target_ratio - w / h)
+        if diff < best_diff:
+            best_diff = diff
+            best_ratio = f"{w}:{h}"
+    if best_ratio:
+        config["aspectRatio"] = best_ratio
+
+    # 根据最大边长确定 imageSize（使用最接近的档位）
+    max_dim = max(width, height)
+    if max_dim <= 1280:
+        config["imageSize"] = "1K"
+    elif max_dim <= 2560:
+        config["imageSize"] = "2K"
+    else:
+        config["imageSize"] = "4K"
+
+    return config
+
+
 def prepare_image_generation_request(
     request_body: Dict[str, Any],
     model: str
