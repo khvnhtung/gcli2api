@@ -237,6 +237,11 @@ GEMINICLI_MODEL_ALIASES: dict[str, str] = {
 # Antigravity uses different model names (no -preview suffix for flash)
 # Note: claude-opus-4-5, claude-sonnet-4-5, claude-sonnet-4-6 etc. work natively on Antigravity
 ANTIGRAVITY_MODEL_ALIASES: dict[str, str] = {
+    "claude-sonnet-4-6": "gemini-3-flash",
+    "claude-sonnet-4-5": "gemini-3-flash",
+    "claude-sonnet-4-5-20250929": "gemini-3-flash",
+    "claude-opus-4-6": "gemini-3-flash",
+    "claude-opus-4-5": "gemini-3-flash",
     # Gemini 3.1 Pro has -high/-low variants on Antigravity
     "gemini-3.1-pro": "gemini-3.1-pro-high",
     # Gemini 3 Pro has -high/-low variants on Antigravity
