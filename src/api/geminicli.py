@@ -45,7 +45,7 @@ from src.api.utils import (
 )
 from src.utils import GEMINICLI_USER_AGENT, get_geminicli_user_agent
 
-from src.audit_log import set_audit_context, increment_audit_attempt
+from src.audit_log import set_audit_context, increment_audit_attempt, update_audit_context
 
 
 def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
@@ -170,6 +170,13 @@ async def stream_request(
         auth_headers, final_payload, target_url = await prepare_request_headers_and_payload(
             body, credential_data,
             f"{await get_code_assist_endpoint()}/v1internal:streamGenerateContent?alt=sse"
+        )
+        update_audit_context(
+            model_effective=final_payload.get("model"),
+            endpoint_base=await get_code_assist_endpoint(),
+            route_provider="google",
+            route_policy="default_pool",
+            route_reason="primary_geminicli",
         )
 
         # 合并自定义headers
@@ -440,6 +447,13 @@ async def non_stream_request(
         auth_headers, final_payload, target_url = await prepare_request_headers_and_payload(
             body, credential_data,
             f"{await get_code_assist_endpoint()}/v1internal:generateContent"
+        )
+        update_audit_context(
+            model_effective=final_payload.get("model"),
+            endpoint_base=await get_code_assist_endpoint(),
+            route_provider="google",
+            route_policy="default_pool",
+            route_reason="primary_geminicli",
         )
 
         # 合并自定义headers

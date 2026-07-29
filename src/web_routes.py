@@ -1432,6 +1432,18 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             if not isinstance(new_config["realtime_quota_refresh_fallback_to_earliest_reset"], bool):
                 raise HTTPException(status_code=400, detail="实时配额刷新最早reset兜底开关必须是布尔值")
 
+        # Z.AI offload config
+        if "zai_enabled" in new_config and not isinstance(new_config["zai_enabled"], bool):
+            raise HTTPException(status_code=400, detail="Z.AI 开关必须是布尔值")
+
+        if "zai_offload_enabled" in new_config and not isinstance(new_config["zai_offload_enabled"], bool):
+            raise HTTPException(status_code=400, detail="Z.AI offload 开关必须是布尔值")
+
+        if "zai_timeout_seconds" in new_config:
+            v = new_config["zai_timeout_seconds"]
+            if not isinstance(v, (int, float)) or v < 5 or v > 600:
+                raise HTTPException(status_code=400, detail="Z.AI 超时必须在 5-600 秒之间")
+
         # 验证服务器配置
         if "host" in new_config:
             if not isinstance(new_config["host"], str) or not new_config["host"].strip():

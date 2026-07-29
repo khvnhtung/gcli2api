@@ -46,6 +46,7 @@ from src.models import OpenAIChatCompletionRequest, model_to_dict
 
 # 本地模块 - 任务管理
 from src.task_manager import create_managed_task
+from src.offload_zai import maybe_offload_openai_to_zai
 
 
 # ==================== 路由器初始化 ====================
@@ -84,6 +85,16 @@ async def chat_completions(
 
     # 获取流式标志
     is_streaming = openai_request.stream
+
+    # Optional utility offload to Z.AI (keeps existing path as fallback)
+    offloaded_response = await maybe_offload_openai_to_zai(
+        payload=normalized_dict,
+        real_model=real_model,
+        is_streaming=is_streaming,
+        route_label="GEMINICLI-OPENAI",
+    )
+    if offloaded_response is not None:
+        return offloaded_response
 
     # 对于抗截断模型的非流式请求，给出警告
     if use_anti_truncation and not is_streaming:

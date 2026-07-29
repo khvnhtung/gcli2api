@@ -12,12 +12,14 @@ from log import log
 # ==================== Usage scaling for Claude Code compatibility ====================
 
 # Real context windows per model family.
-# Claude models: 200K (enforced by Vertex AI upstream) — no scaling needed.
-# Gemini models: 1M-2M — must scale down to 200K for Claude Code.
+# Claude models: 200K real, and current OpenCode clients compact correctly at that scale.
+# Do not upscale Claude usage; upscaling caused repeated premature compaction in practice.
+# Gemini models: 1M-2M real — scale DOWN to 200K for Claude Code.
 _GEMINI_CONTEXT_LIMITS: Dict[str, int] = {
     "gemini-2.5-flash": 1_048_576,
     "gemini-2.5-pro": 1_048_576,
     "gemini-3-flash": 1_048_576,
+    "gemini-3.1-pro": 2_097_152,
     "gemini-3-pro": 2_097_152,
 }
 
@@ -40,11 +42,15 @@ def _get_gemini_context_limit(model: str) -> Optional[int]:
 def scale_usage_tokens(
     input_tokens: int, output_tokens: int, model: str
 ) -> Tuple[int, int]:
-    """Scale token counts so Gemini's 1M+ context maps to Claude Code's 200K window.
+    """Scale token counts so client compaction triggers at the right fill level.
 
-    Claude models (200K real limit) pass through unscaled.
-    Gemini models (1M+) get linearly scaled: raw * 200K / real_limit.
+    Claude models → pass through unscaled.
+    Gemini models (1M+ real, 200K client) → scale DOWN to fit 200K virtual window.
     """
+    if "claude" in model.lower():
+        return input_tokens, output_tokens
+
+    # Gemini: real 1M+ but client expects 200K — scale DOWN
     context_limit = _get_gemini_context_limit(model)
     if context_limit is None or context_limit <= CLAUDE_CODE_CONTEXT_WINDOW:
         return input_tokens, output_tokens

@@ -308,7 +308,10 @@ async def normalize_gemini_request(
             existing_thinking = generation_config.get("thinkingConfig", {})
             has_budget = "thinkingBudget" in existing_thinking and existing_thinking["thinkingBudget"] != 0
 
-            if is_thinking_model(model) or has_budget:
+            # Non-thinking Claude models: upstream has no supportsThinking for these
+            non_thinking_claude = {"claude-sonnet-4-6", "claude-sonnet-4-5"}
+
+            if (is_thinking_model(model) or has_budget) and model not in non_thinking_claude:
                 if is_claude:
                     # Claude on Antigravity uses snake_case thinkingConfig fields
                     # (matching antigravity-claude-proxy's format)
@@ -404,8 +407,11 @@ async def normalize_gemini_request(
                     model = "claude-opus-4-6-thinking"
                 else:
                     model = "claude-opus-4-5-thinking"
-            elif "sonnet" in model.lower() or "haiku" in model.lower():
-                model = "claude-sonnet-4-5-thinking"
+            elif "sonnet" in model.lower():
+                if "4-6" in model:
+                    model = "claude-sonnet-4-6"  # Non-thinking model (no -thinking variant upstream)
+                else:
+                    model = "claude-sonnet-4-5-thinking"
             elif "haiku" in model.lower():
                 model = "gemini-2.5-flash"
             elif "claude" in model.lower():

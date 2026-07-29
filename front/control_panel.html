@@ -1818,6 +1818,71 @@
                         </div>
 
                         <div class="config-group">
+                            <h4>Z.AI Offload 配置</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="zaiEnabled" class="config-checkbox" />
+                                    启用 Z.AI Provider
+                                </label>
+                                <small class="config-note">开启后可使用 Z.AI 作为额外可选提供商</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="zaiOffloadEnabled" class="config-checkbox" />
+                                    启用 Utility 请求 Offload
+                                </label>
+                                <small class="config-note">仅将低风险、文本类辅助请求分流到 Z.AI</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiBaseUrl">Z.AI Base URL:</label>
+                                <input type="text" id="zaiBaseUrl" class="config-input"
+                                    placeholder="https://api.z.ai/api/coding/paas/v4" />
+                                <small class="config-note">Coding Plan 推荐端点</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModel">Z.AI Model (通用回退):</label>
+                                <input type="text" id="zaiModel" class="config-input" placeholder="glm-4.5-air" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelA">Z.AI Model A:</label>
+                                <input type="text" id="zaiModelA" class="config-input" placeholder="glm-4.5-air" />
+                                <small class="config-note">当前 utility offload 默认使用 Model A</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelB">Z.AI Model B:</label>
+                                <input type="text" id="zaiModelB" class="config-input" placeholder="可选" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelC">Z.AI Model C:</label>
+                                <input type="text" id="zaiModelC" class="config-input" placeholder="可选" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelD">Z.AI Model D:</label>
+                                <input type="text" id="zaiModelD" class="config-input" placeholder="可选" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiOffloadTargetModel">Offload 目标模型:</label>
+                                <input type="text" id="zaiOffloadTargetModel" class="config-input"
+                                    placeholder="gemini-2.5-flash" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiTimeoutSeconds">Z.AI 超时（秒）:</label>
+                                <input type="number" id="zaiTimeoutSeconds" class="config-input" min="5" max="600"
+                                    step="1" />
+                            </div>
+                        </div>
+
+                        <div class="config-group">
                             <h4>自动封禁配置</h4>
 
                             <div class="form-group">

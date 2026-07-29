@@ -216,6 +216,8 @@ CALLBACK_HOST = "localhost"
 # These map to -preview models with thinking levels
 # GeminiCLI only has Gemini models, so Claude names need mapping
 GEMINICLI_MODEL_ALIASES: dict[str, str] = {
+    # Gemini 3.1 Pro shortcuts → default to high thinking
+    "gemini-3.1-pro": "gemini-3.1-pro-high",
     # Gemini 3 Pro shortcuts → default to high thinking
     "gemini-3-pro": "gemini-3-pro-preview-high",
     "gemini-3-pro-preview": "gemini-3-pro-preview-high",
@@ -227,13 +229,16 @@ GEMINICLI_MODEL_ALIASES: dict[str, str] = {
     "claude-opus-4-5": "gemini-3-pro-preview-high",
     "claude-sonnet-4-thinking": "gemini-3-flash-preview-high",
     "claude-sonnet-4": "gemini-3-flash-preview-high",
+    "claude-sonnet-4-6": "gemini-3-flash-preview-high",
     "claude-haiku-4-5-20251001": "gemini-2.5-flash",
 }
 
 # Model aliases for Antigravity (/antigravity/) endpoint
 # Antigravity uses different model names (no -preview suffix for flash)
-# Note: claude-opus-4-5, claude-sonnet-4-5 etc. work natively on Antigravity
+# Note: claude-opus-4-5, claude-sonnet-4-5, claude-sonnet-4-6 etc. work natively on Antigravity
 ANTIGRAVITY_MODEL_ALIASES: dict[str, str] = {
+    # Gemini 3.1 Pro has -high/-low variants on Antigravity
+    "gemini-3.1-pro": "gemini-3.1-pro-high",
     # Gemini 3 Pro has -high/-low variants on Antigravity
     "gemini-3-pro": "gemini-3-pro-high",
     "gemini-3-pro-preview": "gemini-3-pro-high",
@@ -245,6 +250,8 @@ ANTIGRAVITY_MODEL_ALIASES: dict[str, str] = {
 
 # Default aliases (used when mode is not specified)
 MODEL_ALIASES: dict[str, str] = {
+    # Gemini 3.1 Pro shortcuts → default to high thinking
+    "gemini-3.1-pro": "gemini-3.1-pro-high",
     # Gemini 3 Pro shortcuts → default to high thinking
     "gemini-3-pro": "gemini-3-pro-high",
     "gemini-3-pro-preview": "gemini-3-pro-preview-high",
@@ -255,6 +262,7 @@ MODEL_ALIASES: dict[str, str] = {
     "claude-opus-4-5": "gemini-3-pro-high",
     "claude-sonnet-4-thinking": "gemini-3-flash",
     "claude-sonnet-4": "gemini-3-flash",
+    "claude-sonnet-4-6": "gemini-3-flash",
     # Defensive mapping: route Haiku to a Gemini flash tier.
     "claude-haiku-4-5-20251001": "gemini-2.5-flash",
 }
@@ -326,6 +334,7 @@ DEFAULT_SAFETY_SETTINGS = [
 BASE_MODELS = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    "gemini-3.1-pro",
     "gemini-3-pro-preview",
     "gemini-3-flash-preview"
 ]

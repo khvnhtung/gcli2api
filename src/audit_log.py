@@ -37,6 +37,16 @@ _VALIDATION_PHRASES = [
     "verify your account",
 ]
 
+_SECRET_HINTS = (
+    "auth_service_token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "api-key",
+    ".env",
+    "-----begin",
+)
+
 _ROLLING_5H_MIN_SECONDS = 4 * 3600
 _ROLLING_5H_MAX_SECONDS = 6 * 3600
 _WEEKLY_LIKE_MIN_SECONDS = 24 * 3600
@@ -97,6 +107,9 @@ _ctx_request_payload_sha256: contextvars.ContextVar[Optional[str]] = contextvars
 _ctx_request_payload_size: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
     "audit_request_payload_size", default=None
 )
+_ctx_meta: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "audit_meta", default=None
+)
 
 
 def set_audit_context(
@@ -119,7 +132,17 @@ def set_audit_context(
     _ctx_request_payload_path.set(None)
     _ctx_request_payload_sha256.set(None)
     _ctx_request_payload_size.set(None)
+    _ctx_meta.set({})
     return request_id
+
+
+def update_audit_context(**kwargs: Any) -> None:
+    """Merge extra routing/telemetry metadata into the current audit context."""
+    current = dict(_ctx_meta.get() or {})
+    for key, value in kwargs.items():
+        if value is not None:
+            current[key] = value
+    _ctx_meta.set(current)
 
 
 def increment_audit_attempt() -> int:
@@ -134,7 +157,7 @@ def get_audit_context() -> Dict[str, Any]:
     request_id = _ctx_request_id.get()
     if not request_id:
         return {}
-    return {
+    context = {
         "request_id": request_id,
         "mode": _ctx_mode.get() or "",
         "model_requested": _ctx_model.get(),
@@ -147,6 +170,8 @@ def get_audit_context() -> Dict[str, Any]:
         "request_payload_sha256": _ctx_request_payload_sha256.get(),
         "request_payload_size": _ctx_request_payload_size.get(),
     }
+    context.update(_ctx_meta.get() or {})
+    return context
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +282,11 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
             model_family        TEXT,
             model_effective     TEXT,
             endpoint_base       TEXT,
+            route_provider      TEXT,
+            route_policy        TEXT,
+            route_reason        TEXT,
+            fallback_used       INTEGER DEFAULT 0,
+            fallback_detail     TEXT,
             request_payload_path   TEXT,
             request_payload_sha256 TEXT,
             request_payload_size   INTEGER,
@@ -278,6 +308,7 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
             error_type          TEXT,
             error_reason        TEXT,
             error_message       TEXT,
+            request_pattern     TEXT,
             response_payload_path   TEXT,
             response_payload_sha256 TEXT,
             response_payload_size   INTEGER,
@@ -306,6 +337,12 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
     await _ensure_column(db, "request_audit", "cooldown_until_ts", "REAL")
     await _ensure_column(db, "request_audit", "cooldown_seconds", "INTEGER")
     await _ensure_column(db, "request_audit", "rate_limit_class", "TEXT")
+    await _ensure_column(db, "request_audit", "route_provider", "TEXT")
+    await _ensure_column(db, "request_audit", "route_policy", "TEXT")
+    await _ensure_column(db, "request_audit", "route_reason", "TEXT")
+    await _ensure_column(db, "request_audit", "fallback_used", "INTEGER DEFAULT 0")
+    await _ensure_column(db, "request_audit", "fallback_detail", "TEXT")
+    await _ensure_column(db, "request_audit", "request_pattern", "TEXT")
 
     await db.execute("""
         CREATE TABLE IF NOT EXISTS quota_windows (
@@ -356,6 +393,27 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
         ON usage_hourly(mode, credential_filename, model_family, hour_bucket_ts)
     """)
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS usage_hourly_route (
+            hour_bucket_ts REAL NOT NULL,
+            mode TEXT NOT NULL,
+            route_provider TEXT NOT NULL,
+            route_policy TEXT NOT NULL,
+            requests_total INTEGER NOT NULL DEFAULT 0,
+            requests_ok INTEGER NOT NULL DEFAULT 0,
+            requests_429 INTEGER NOT NULL DEFAULT 0,
+            requests_403 INTEGER NOT NULL DEFAULT 0,
+            bans INTEGER NOT NULL DEFAULT 0,
+            fallbacks INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour_bucket_ts, mode, route_provider, route_policy)
+        )
+    """)
+
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_usage_hourly_route_lookup
+        ON usage_hourly_route(mode, route_provider, route_policy, hour_bucket_ts)
+    """)
+
     # Indexes for forensic queries
     await db.execute("""
         CREATE INDEX IF NOT EXISTS idx_audit_ts
@@ -380,6 +438,10 @@ async def _create_audit_table(db: aiosqlite.Connection) -> None:
     await db.execute("""
         CREATE INDEX IF NOT EXISTS idx_audit_outcome
         ON request_audit(outcome, ts)
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_pattern_ts
+        ON request_audit(request_pattern, ts)
     """)
 
 
@@ -442,6 +504,184 @@ def _normalize_payload_text(payload: Any) -> str:
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
     except Exception:
         return str(payload)
+
+
+def _extract_tool_metrics_from_payload(payload: Any) -> tuple[int, bool]:
+    """Best-effort extraction of tool usage hints from request payload."""
+    if not isinstance(payload, dict):
+        return 0, False
+
+    tools = None
+    request = payload.get("request")
+    if isinstance(request, dict) and isinstance(request.get("tools"), list):
+        tools = request.get("tools")
+    elif isinstance(payload.get("tools"), list):
+        tools = payload.get("tools")
+
+    if not isinstance(tools, list):
+        return 0, False
+
+    has_web_search = False
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        as_json = ""
+        try:
+            as_json = json.dumps(t, ensure_ascii=False)
+        except Exception:
+            as_json = str(t)
+        lowered = as_json.lower()
+        if "web_search" in lowered or "googlesearch" in lowered or "google_search" in lowered:
+            has_web_search = True
+            break
+
+    return len(tools), has_web_search
+
+
+def _payload_has_image(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and (
+                    block.get("type") == "image" or "image_url" in block or "image" in block
+                ):
+                    return True
+
+    request = payload.get("request")
+    if isinstance(request, dict):
+        contents = request.get("contents")
+        if isinstance(contents, list):
+            for c in contents:
+                if not isinstance(c, dict):
+                    continue
+                parts = c.get("parts")
+                if not isinstance(parts, list):
+                    continue
+                for p in parts:
+                    if isinstance(p, dict) and ("inlineData" in p or "fileData" in p):
+                        return True
+
+    return False
+
+
+def _extract_prompt_text(payload: Any, limit: int = 16000) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload[:limit]
+    if not isinstance(payload, dict):
+        return str(payload)[:limit]
+
+    parts: list[str] = []
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+
+    request = payload.get("request")
+    if isinstance(request, dict):
+        contents = request.get("contents")
+        if isinstance(contents, list):
+            for c in contents:
+                if not isinstance(c, dict):
+                    continue
+                c_parts = c.get("parts")
+                if not isinstance(c_parts, list):
+                    continue
+                for p in c_parts:
+                    if isinstance(p, dict):
+                        text = p.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+
+    text = "\n".join(parts)
+    if not text:
+        text = _normalize_payload_text(payload)
+    return text[:limit]
+
+
+def _classify_request_pattern(
+    *,
+    payload: Any,
+    model_requested: Optional[str],
+    tool_count: int,
+    has_web_search: bool,
+    request_payload_size: Optional[int],
+) -> str:
+    text = _extract_prompt_text(payload)
+    lower = text.lower()
+
+    first_line = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            first_line = stripped.lower()
+            break
+
+    model_lower = str(model_requested or "").lower()
+
+    if _payload_has_image(payload):
+        return "image_input"
+
+    if any(h in lower for h in _SECRET_HINTS):
+        return "secret_like"
+
+    try:
+        import re
+
+        if re.search(r"\b[a-zA-Z0-9_-]{32,}\b", text):
+            return "secret_like"
+    except Exception:
+        pass
+
+    if has_web_search or "-search" in model_lower or "web_search" in lower:
+        return "web_search"
+
+    if first_line == "count":
+        return "utility_count"
+
+    if "analyze if this message indicates a new conversation topic" in lower:
+        return "utility_topic_classifier"
+
+    if "extract any file paths that this command reads or modifies" in lower:
+        return "utility_filepath_extractor"
+
+    if "<task-notification>" in lower:
+        return "task_notification"
+
+    if "fetch and summarize the content from this url" in lower:
+        return "fetch_page_summary"
+
+    if tool_count > 0:
+        return "tool_calling"
+
+    try:
+        if request_payload_size is not None and int(request_payload_size) >= 100000:
+            return "long_context"
+    except Exception:
+        pass
+
+    return "general_chat"
 
 
 def _build_raw_relative_path(ts: float, request_id: str, attempt_no: int, kind: str) -> str:
@@ -652,6 +892,11 @@ async def log_attempt(
     model_requested: Optional[str] = None,
     model_effective: Optional[str] = None,
     endpoint_base: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    route_policy: Optional[str] = None,
+    route_reason: Optional[str] = None,
+    fallback_used: bool = False,
+    fallback_detail: Optional[str] = None,
     streaming: bool = False,
     attempt_no: int = 0,
     max_retries: int = 0,
@@ -662,8 +907,8 @@ async def log_attempt(
     tokens_out: Optional[int] = None,
     cooldown_until_ts: Optional[float] = None,
     error_text: str = "",
-    tool_count: int = 0,
-    has_web_search: bool = False,
+    tool_count: Optional[int] = None,
+    has_web_search: Optional[bool] = None,
     outcome: Optional[str] = None,
     session_id: Optional[str] = None,
     request_payload: Optional[Any] = None,
@@ -694,6 +939,30 @@ async def log_attempt(
     request_payload_for_write = request_payload
     if request_payload_for_write is None:
         request_payload_for_write = _ctx_request_payload.get()
+
+    ctx_meta = _ctx_meta.get() or {}
+    if model_effective is None:
+        model_effective = ctx_meta.get("model_effective")
+    if endpoint_base is None:
+        endpoint_base = ctx_meta.get("endpoint_base")
+    if route_provider is None:
+        route_provider = ctx_meta.get("route_provider")
+    if route_policy is None:
+        route_policy = ctx_meta.get("route_policy")
+    if route_reason is None:
+        route_reason = ctx_meta.get("route_reason")
+    if not fallback_used and ctx_meta.get("fallback_used"):
+        fallback_used = True
+    if fallback_detail is None:
+        fallback_detail = ctx_meta.get("fallback_detail")
+
+    inferred_tool_count, inferred_has_web_search = _extract_tool_metrics_from_payload(
+        request_payload_for_write
+    )
+    if tool_count is None:
+        tool_count = inferred_tool_count
+    if has_web_search is None:
+        has_web_search = inferred_has_web_search
 
     if _raw_enabled:
         try:
@@ -739,6 +1008,13 @@ async def log_attempt(
                 log.warning(f"[AUDIT] Failed writing raw response payload: {e}")
 
     model_family = _detect_model_family(model_requested or model_effective)
+    request_pattern = _classify_request_pattern(
+        payload=request_payload_for_write,
+        model_requested=model_requested,
+        tool_count=int(tool_count or 0),
+        has_web_search=bool(has_web_search),
+        request_payload_size=request_payload_size,
+    )
     rate_limit_class = _classify_rate_limit_class(http_status, cooldown_until_ts, ts_now)
     cooldown_seconds = None
     if cooldown_until_ts is not None:
@@ -762,6 +1038,11 @@ async def log_attempt(
         "model_family": model_family,
         "model_effective": model_effective,
         "endpoint_base": endpoint_base,
+        "route_provider": route_provider,
+        "route_policy": route_policy,
+        "route_reason": route_reason,
+        "fallback_used": 1 if fallback_used else 0,
+        "fallback_detail": fallback_detail,
         "request_payload_path": request_payload_path,
         "request_payload_sha256": request_payload_sha256,
         "request_payload_size": request_payload_size,
@@ -779,12 +1060,13 @@ async def log_attempt(
         "error_type": error_cls.get("error_type"),
         "error_reason": error_cls.get("error_reason"),
         "error_message": error_cls.get("error_message"),
+        "request_pattern": request_pattern,
         "response_payload_path": response_payload_path,
         "response_payload_sha256": response_payload_sha256,
         "response_payload_size": response_payload_size,
         "ban_signal": 1 if error_cls.get("ban_signal") else 0,
         "validation_required": 1 if error_cls.get("validation_required") else 0,
-        "tool_count": tool_count,
+        "tool_count": int(tool_count or 0),
         "has_web_search": 1 if has_web_search else 0,
         "outcome": outcome,
     }
@@ -844,10 +1126,11 @@ async def _write_batch(batch: list) -> None:
         "credential_filename", "credential_email", "credential_project", "is_ultra",
         "client_ip_hash", "user_agent_hash",
         "model_requested", "model_family", "model_effective", "endpoint_base",
+        "route_provider", "route_policy", "route_reason", "fallback_used", "fallback_detail",
         "request_payload_path", "request_payload_sha256", "request_payload_size",
         "streaming", "attempt_no", "max_retries", "rotated_credential",
         "http_status", "latency_ms", "tokens_in", "tokens_out", "cooldown_until_ts", "cooldown_seconds", "rate_limit_class",
-        "error_type", "error_reason", "error_message",
+        "error_type", "error_reason", "error_message", "request_pattern",
         "response_payload_path", "response_payload_sha256", "response_payload_size",
         "ban_signal", "validation_required",
         "tool_count", "has_web_search",
@@ -867,6 +1150,7 @@ async def _write_batch(batch: list) -> None:
 
             for row in batch:
                 await _update_usage_hourly(db, row)
+                await _update_usage_hourly_route(db, row)
                 await _update_quota_windows(db, row)
 
             await db.commit()
@@ -1003,6 +1287,54 @@ async def _update_usage_hourly(db: aiosqlite.Connection, row: Dict[str, Any]) ->
             req_ok_inc,
             tokens_in_inc,
             tokens_out_inc,
+        ),
+    )
+
+
+async def _update_usage_hourly_route(db: aiosqlite.Connection, row: Dict[str, Any]) -> None:
+    mode = row.get("mode")
+    if not mode:
+        return
+
+    ts = float(row.get("ts") or time.time())
+    bucket = _hour_bucket(ts)
+    route_provider = str(row.get("route_provider") or "unknown")
+    route_policy = str(row.get("route_policy") or "unknown")
+    status = row.get("http_status")
+
+    req_total_inc = 1
+    req_ok_inc = 1 if status == 200 else 0
+    req_429_inc = 1 if status == 429 else 0
+    req_403_inc = 1 if status == 403 else 0
+    bans_inc = 1 if row.get("ban_signal") else 0
+    fallback_inc = 1 if row.get("fallback_used") else 0
+
+    await db.execute(
+        """
+        INSERT INTO usage_hourly_route (
+            hour_bucket_ts, mode, route_provider, route_policy,
+            requests_total, requests_ok, requests_429, requests_403, bans, fallbacks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(hour_bucket_ts, mode, route_provider, route_policy)
+        DO UPDATE SET
+            requests_total = requests_total + excluded.requests_total,
+            requests_ok = requests_ok + excluded.requests_ok,
+            requests_429 = requests_429 + excluded.requests_429,
+            requests_403 = requests_403 + excluded.requests_403,
+            bans = bans + excluded.bans,
+            fallbacks = fallbacks + excluded.fallbacks
+        """,
+        (
+            bucket,
+            mode,
+            route_provider,
+            route_policy,
+            req_total_inc,
+            req_ok_inc,
+            req_429_inc,
+            req_403_inc,
+            bans_inc,
+            fallback_inc,
         ),
     )
 

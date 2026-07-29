@@ -51,7 +51,16 @@ from src.api.quota_refresh import fetch_realtime_quota_reset_timestamp
 
 from src.google_oauth_api import Credentials, fetch_project_id
 
-from src.audit_log import set_audit_context, increment_audit_attempt
+from src.audit_log import set_audit_context, increment_audit_attempt, update_audit_context
+
+
+def _routing_policy_for_model(model_name: str) -> str:
+    name = str(model_name or "")
+    if name.startswith("claude-"):
+        return "claude_ultra_only"
+    if name.startswith("gemini-"):
+        return "gemini_non_ultra"
+    return "default_pool"
 
 
 def _build_no_credentials_response(snapshot: Dict[str, Any]) -> Response:
@@ -359,6 +368,13 @@ async def stream_request(
         "project": project_id,
         "request": body.get("request", {}),
     }
+    update_audit_context(
+        model_effective=final_payload.get("model"),
+        endpoint_base=endpoint_fallbacks[0] if endpoint_fallbacks else None,
+        route_provider="google",
+        route_policy=_routing_policy_for_model(model_name),
+        route_reason="primary_antigravity",
+    )
 
     # -------------------------------------------------------------------------
     # Adaptive thinking emulation via effort → thinkingBudget mapping
@@ -1004,6 +1020,13 @@ async def non_stream_request(
         "project": project_id,
         "request": body.get("request", {}),
     }
+    update_audit_context(
+        model_effective=final_payload.get("model"),
+        endpoint_base=endpoint_fallbacks[0] if endpoint_fallbacks else None,
+        route_provider="google",
+        route_policy=_routing_policy_for_model(model_name),
+        route_reason="primary_antigravity",
+    )
 
     # -------------------------------------------------------------------------
     # Adaptive thinking emulation via effort → thinkingBudget mapping
@@ -1568,6 +1591,8 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
                     )
                     model_list.append(model_to_dict(model))
 
+            existing_ids = {m.get("id") for m in model_list if isinstance(m, dict)}
+
             if "claude-opus-4-5-thinking" in data.get('models', {}):
                 # 添加 claude-opus-4-5 模型
                 model = Model(
@@ -1587,6 +1612,26 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
                     owned_by='google'
                 )
                 model_list.append(model_to_dict(claude_opus_model))
+
+            # Future-proof: add non-thinking alias if sonnet-4-6-thinking appears
+            if "claude-sonnet-4-6-thinking" in data.get('models', {}):
+                sonnet_46_model = Model(
+                    id='claude-sonnet-4-6',
+                    object='model',
+                    created=current_timestamp,
+                    owned_by='google'
+                )
+                model_list.append(model_to_dict(sonnet_46_model))
+
+            # Add convenience alias for Gemini 3.1 Pro
+            if "gemini-3.1-pro-high" in data.get('models', {}) and "gemini-3.1-pro" not in existing_ids:
+                gemini_31_pro_model = Model(
+                    id='gemini-3.1-pro',
+                    object='model',
+                    created=current_timestamp,
+                    owned_by='google'
+                )
+                model_list.append(model_to_dict(gemini_31_pro_model))
 
             log.info(f"[ANTIGRAVITY] Fetched {len(model_list)} available models")
             return model_list

@@ -607,6 +607,8 @@ Auditable record of every design decision made when building the Antigravity pro
 | gemini-3-flash | -1 (dynamic) | 32 | Model always thinks; budget is advisory cap |
 | gemini-3-pro-high | -1 (dynamic) | 128 | |
 | gemini-3-pro-low | 128 | 128 | Tight budget for low tier |
+| gemini-3.1-pro-high | -1 (dynamic) | 128 | Upstream added; behaves like pro-high tier |
+| gemini-3.1-pro-low | 128 | 128 | Upstream added low-budget tier |
 | gemini-2.5-flash | 1024 | N/A | |
 | gemini-2.5-pro | 1024 | 128 | |
 | claude-sonnet-4-5-thinking | 1024 | N/A | Antigravity enforces 1024 minimum |

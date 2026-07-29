@@ -68,6 +68,19 @@ ENV_MAPPINGS = {
     "AUDIT_RAW_RETENTION_DAYS": "audit_raw_retention_days",
     "AUDIT_RAW_MAX_BYTES": "audit_raw_max_bytes",
 
+    # Z.AI offload provider
+    "ZAI_ENABLED": "zai_enabled",
+    "ZAI_API_KEY": "zai_api_key",
+    "ZAI_BASE_URL": "zai_base_url",
+    "ZAI_MODEL": "zai_model",
+    "ZAI_MODEL_A": "zai_model_a",
+    "ZAI_MODEL_B": "zai_model_b",
+    "ZAI_MODEL_C": "zai_model_c",
+    "ZAI_MODEL_D": "zai_model_d",
+    "ZAI_OFFLOAD_ENABLED": "zai_offload_enabled",
+    "ZAI_OFFLOAD_TARGET_MODEL": "zai_offload_target_model",
+    "ZAI_TIMEOUT_SECONDS": "zai_timeout_seconds",
+
     "HOST": "host",
     "PORT": "port",
     "API_PASSWORD": "api_password",
@@ -147,6 +160,18 @@ async def build_effective_config_for_panel() -> tuple[dict[str, Any], set[str]]:
     current_config["audit_raw_dir"] = await get_audit_raw_dir()
     current_config["audit_raw_retention_days"] = await get_audit_raw_retention_days()
     current_config["audit_raw_max_bytes"] = await get_audit_raw_max_bytes()
+
+    # Z.AI offload provider (non-secret fields only)
+    current_config["zai_enabled"] = await get_zai_enabled()
+    current_config["zai_base_url"] = await get_zai_base_url()
+    current_config["zai_model"] = await get_zai_model()
+    current_config["zai_model_a"] = await get_zai_model_a()
+    current_config["zai_model_b"] = await get_zai_model_b()
+    current_config["zai_model_c"] = await get_zai_model_c()
+    current_config["zai_model_d"] = await get_zai_model_d()
+    current_config["zai_offload_enabled"] = await get_zai_offload_enabled()
+    current_config["zai_offload_target_model"] = await get_zai_offload_target_model()
+    current_config["zai_timeout_seconds"] = await get_zai_timeout_seconds()
 
     # Server config
     current_config["host"] = await get_server_host()
@@ -676,6 +701,76 @@ async def get_audit_raw_max_bytes() -> int:
         except ValueError:
             pass
     return int(await get_config_value("audit_raw_max_bytes", 1024 * 1024))
+
+
+async def get_zai_enabled() -> bool:
+    env_value = os.getenv("ZAI_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("zai_enabled", False))
+
+
+async def get_zai_api_key() -> str:
+    return str(await get_config_value("zai_api_key", "", "ZAI_API_KEY"))
+
+
+async def get_zai_base_url() -> str:
+    return str(
+        await get_config_value(
+            "zai_base_url",
+            "https://api.z.ai/api/coding/paas/v4",
+            "ZAI_BASE_URL",
+        )
+    ).rstrip("/")
+
+
+async def get_zai_model_a() -> str:
+    return str(await get_config_value("zai_model_a", "glm-4.5-air", "ZAI_MODEL_A"))
+
+
+async def get_zai_model_b() -> str:
+    return str(await get_config_value("zai_model_b", "", "ZAI_MODEL_B"))
+
+
+async def get_zai_model_c() -> str:
+    return str(await get_config_value("zai_model_c", "", "ZAI_MODEL_C"))
+
+
+async def get_zai_model_d() -> str:
+    return str(await get_config_value("zai_model_d", "", "ZAI_MODEL_D"))
+
+
+async def get_zai_model() -> str:
+    explicit = str(await get_config_value("zai_model", "", "ZAI_MODEL")).strip()
+    if explicit:
+        return explicit
+    model_a = (await get_zai_model_a()).strip()
+    return model_a or "glm-4.5-air"
+
+
+async def get_zai_offload_enabled() -> bool:
+    env_value = os.getenv("ZAI_OFFLOAD_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("zai_offload_enabled", False))
+
+
+async def get_zai_offload_target_model() -> str:
+    return str(
+        await get_config_value(
+            "zai_offload_target_model", "gemini-2.5-flash", "ZAI_OFFLOAD_TARGET_MODEL"
+        )
+    )
+
+
+async def get_zai_timeout_seconds() -> float:
+    env_value = os.getenv("ZAI_TIMEOUT_SECONDS")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass
+    return float(await get_config_value("zai_timeout_seconds", 90.0))
 
 
 async def get_oauth_proxy_url() -> str:

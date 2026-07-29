@@ -2215,6 +2215,17 @@ function populateConfigForm() {
     setConfigField('resourceManagerApiUrl', c.resource_manager_api_url || '');
     setConfigField('serviceUsageApiUrl', c.service_usage_api_url || '');
     setConfigField('antigravityApiUrl', c.antigravity_api_url || '');
+    setConfigField('zaiBaseUrl', c.zai_base_url || '');
+    setConfigField('zaiModel', c.zai_model || '');
+    setConfigField('zaiModelA', c.zai_model_a || '');
+    setConfigField('zaiModelB', c.zai_model_b || '');
+    setConfigField('zaiModelC', c.zai_model_c || '');
+    setConfigField('zaiModelD', c.zai_model_d || '');
+    setConfigField('zaiOffloadTargetModel', c.zai_offload_target_model || 'gemini-2.5-flash');
+    setConfigField('zaiTimeoutSeconds', c.zai_timeout_seconds || 90);
+
+    document.getElementById('zaiEnabled').checked = Boolean(c.zai_enabled);
+    document.getElementById('zaiOffloadEnabled').checked = Boolean(c.zai_offload_enabled);
 
     document.getElementById('autoBanEnabled').checked = Boolean(c.auto_ban_enabled);
     setConfigField('autoBanErrorCodes', (c.auto_ban_error_codes || []).join(','));
@@ -2281,6 +2292,16 @@ async function saveConfig() {
             resource_manager_api_url: getValue('resourceManagerApiUrl'),
             service_usage_api_url: getValue('serviceUsageApiUrl'),
             antigravity_api_url: getValue('antigravityApiUrl'),
+            zai_enabled: getChecked('zaiEnabled'),
+            zai_base_url: getValue('zaiBaseUrl'),
+            zai_model: getValue('zaiModel'),
+            zai_model_a: getValue('zaiModelA'),
+            zai_model_b: getValue('zaiModelB'),
+            zai_model_c: getValue('zaiModelC'),
+            zai_model_d: getValue('zaiModelD'),
+            zai_offload_enabled: getChecked('zaiOffloadEnabled'),
+            zai_offload_target_model: getValue('zaiOffloadTargetModel', 'gemini-2.5-flash'),
+            zai_timeout_seconds: getFloat('zaiTimeoutSeconds', 90),
             auto_ban_enabled: getChecked('autoBanEnabled'),
             auto_ban_error_codes: getValue('autoBanErrorCodes').split(',')
                 .map(c => parseInt(c.trim())).filter(c => !isNaN(c)),

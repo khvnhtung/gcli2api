@@ -1545,6 +1545,64 @@
                         </div>
 
                         <div class="card">
+                            <h4 style="margin-top: 0; margin-bottom: 15px;">Z.AI Offload 配置</h4>
+
+                            <div class="form-group">
+                                <label style="display: flex; align-items: center; gap: 8px;">
+                                    <input type="checkbox" id="zaiEnabled" style="width: auto; margin: 0;" />
+                                    启用 Z.AI Provider
+                                </label>
+                            </div>
+
+                            <div class="form-group">
+                                <label style="display: flex; align-items: center; gap: 8px;">
+                                    <input type="checkbox" id="zaiOffloadEnabled" style="width: auto; margin: 0;" />
+                                    启用 Utility Offload
+                                </label>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiBaseUrl">Z.AI Base URL:</label>
+                                <input type="text" id="zaiBaseUrl" placeholder="https://api.z.ai/api/coding/paas/v4" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModel">Z.AI Model (回退):</label>
+                                <input type="text" id="zaiModel" placeholder="glm-4.5-air" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelA">Z.AI Model A:</label>
+                                <input type="text" id="zaiModelA" placeholder="glm-4.5-air" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelB">Z.AI Model B:</label>
+                                <input type="text" id="zaiModelB" placeholder="可选" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelC">Z.AI Model C:</label>
+                                <input type="text" id="zaiModelC" placeholder="可选" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiModelD">Z.AI Model D:</label>
+                                <input type="text" id="zaiModelD" placeholder="可选" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiOffloadTargetModel">Offload 目标模型:</label>
+                                <input type="text" id="zaiOffloadTargetModel" placeholder="gemini-2.5-flash" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="zaiTimeoutSeconds">Z.AI 超时（秒）:</label>
+                                <input type="number" id="zaiTimeoutSeconds" min="5" max="600" step="1" />
+                            </div>
+                        </div>
+
+                        <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">自动封禁配置</h4>
 
                             <div class="form-group">

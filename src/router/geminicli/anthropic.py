@@ -49,6 +49,7 @@ from src.task_manager import create_managed_task
 
 # 本地模块 - Token估算
 from src.token_estimator import count_tokens_native, estimate_input_tokens, scale_usage_tokens
+from src.offload_zai import maybe_offload_anthropic_to_zai
 
 
 # ==================== 路由器初始化 ====================
@@ -87,6 +88,16 @@ async def messages(
 
     # 获取流式标志
     is_streaming = claude_request.stream
+
+    # Optional utility offload to Z.AI (keeps existing path as fallback)
+    offloaded_response = await maybe_offload_anthropic_to_zai(
+        payload=normalized_dict,
+        real_model=real_model,
+        is_streaming=is_streaming,
+        route_label="GEMINICLI-ANTHROPIC",
+    )
+    if offloaded_response is not None:
+        return offloaded_response
 
     # 对于抗截断模型的非流式请求，给出警告
     if use_anti_truncation and not is_streaming:
