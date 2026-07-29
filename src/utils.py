@@ -237,12 +237,7 @@ GEMINICLI_MODEL_ALIASES: dict[str, str] = {
 # Antigravity uses different model names (no -preview suffix for flash)
 # Note: claude-opus-4-5, claude-sonnet-4-5, claude-sonnet-4-6 etc. work natively on Antigravity
 ANTIGRAVITY_MODEL_ALIASES: dict[str, str] = {
-    "claude-sonnet-4-6": "gemini-3-flash",
-    "claude-sonnet-4-5": "gemini-3-flash",
-    "claude-sonnet-4-5-20250929": "gemini-3-flash",
-    "claude-opus-4-6": "gemini-3-flash",
-    "claude-opus-4-5": "gemini-3-flash",
-    # Gemini 3.1 Pro has -high/-low variants on Antigravity
+                        # Gemini 3.1 Pro has -high/-low variants on Antigravity
     "gemini-3.1-pro": "gemini-3.1-pro-high",
     # Gemini 3 Pro has -high/-low variants on Antigravity
     "gemini-3-pro": "gemini-3-pro-high",
@@ -267,8 +262,7 @@ MODEL_ALIASES: dict[str, str] = {
     "claude-opus-4-5": "gemini-3-pro-high",
     "claude-sonnet-4-thinking": "gemini-3-flash",
     "claude-sonnet-4": "gemini-3-flash",
-    "claude-sonnet-4-6": "gemini-3-flash",
-    # Defensive mapping: route Haiku to a Gemini flash tier.
+        # Defensive mapping: route Haiku to a Gemini flash tier.
     "claude-haiku-4-5-20251001": "gemini-2.5-flash",
 }
 
